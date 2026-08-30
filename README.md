@@ -10,7 +10,3 @@ This repository contains tools and algorithms for analyzing and detecting forged
 
 - Python 3.9+
 - See `requirements.txt` (to be added)
-
-## License
-
-MIT
