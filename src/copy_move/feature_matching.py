@@ -96,32 +96,48 @@ def match_features(
 
     matcher = _build_matcher(features.detector_name)
 
-    # k=2 nearest neighbours per descriptor for the ratio test.
-    # knnMatch returns a list of length N (one per query descriptor).
+    # k=3 nearest neighbours per descriptor. We need 3 because:
+    #   nn[0] is usually the self-match (distance 0) which we discard,
+    #   nn[1] is the real best candidate (the "m" for the ratio test),
+    #   nn[2] is the second-best candidate (the "n" in `m.distance < ratio*n.distance`).
     try:
-        raw = matcher.knnMatch(features.descriptors, features.descriptors, k=2)
-    except cv2.error as e:
+        raw = matcher.knnMatch(features.descriptors, features.descriptors, k=3)
+    except cv2.error:
         # FLANN sometimes errors when descriptor count is tiny; fall back to BF.
         bf = cv2.BFMatcher(
             cv2.NORM_HAMMING if features.detector_name == "orb" else cv2.NORM_L2,
             crossCheck=False,
         )
-        raw = bf.knnMatch(features.descriptors, features.descriptors, k=2)
+        raw = bf.knnMatch(features.descriptors, features.descriptors, k=3)
 
-    # Drop self-matches before the ratio test: a descriptor's own nearest
-    # neighbour is itself (distance 0) and would always pass the ratio test.
-    non_self = [nn for nn in raw if len(nn) >= 2 and nn[0].queryIdx != nn[0].trainIdx]
-    good = _apply_ratio_test(non_self, ratio=ratio)
-
-    # Build MatchPair objects, also applying spatial-distance suppression.
-    kps = features.keypoints
+    # Process each query's k=2 matches:
+    #   - The self-match (queryIdx == trainIdx) sits at index 0 with distance 0.
+    #     We drop the self-match but ALWAYS compare against the next-best
+    #     neighbour (the real candidate), not against the self-match.
+    #   - Apply Lowe's ratio test against the next-best neighbour.
     pairs: List[MatchPair] = []
-    for m in good:
+    kps = features.keypoints
+    for nn in raw:
+        if len(nn) < 2:
+            continue
+        m = nn[0]
+        n = nn[1]
+        # Skip self-match and its pair (which is the next-best real candidate).
+        if m.queryIdx == m.trainIdx:
+            if len(nn) < 3:
+                continue
+            m = nn[1]
+            n = nn[2] if len(nn) > 2 else nn[1]
+            if m.queryIdx == m.trainIdx:
+                # Two self-matches in a row shouldn't happen, but be safe.
+                continue
+        # Lowe's ratio test.
+        if m.distance >= ratio * n.distance:
+            continue
+        # Spatial suppression.
         a = kps[m.queryIdx].pt
         b = kps[m.trainIdx].pt
-        dx = a[0] - b[0]
-        dy = a[1] - b[1]
-        spatial = float(np.hypot(dx, dy))
+        spatial = float(np.hypot(a[0] - b[0], a[1] - b[1]))
         if spatial < spatial_distance_min:
             continue
         pairs.append(
