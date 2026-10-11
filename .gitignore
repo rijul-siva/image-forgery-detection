@@ -62,3 +62,4 @@ zed.md
 
 # knowledge graph (local only — never commit or push)
 graphify-out/
+.gitattributes
