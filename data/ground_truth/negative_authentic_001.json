@@ -1,0 +1,7 @@
+{
+    "dataset_type": "synthetic_benchmark",
+    "image_name": "negative_authentic_001.png",
+    "is_forged": false,
+    "scenario": "authentic_genuine",
+    "description": "Authentic scene containing single object without copy-paste"
+}

@@ -1,0 +1,7 @@
+{
+    "dataset_type": "synthetic_benchmark",
+    "image_name": "negative_repetitive_bricks_002.png",
+    "is_forged": false,
+    "scenario": "repetitive_texture_bricks",
+    "description": "Periodic brick wall pattern for stress-testing false-positive suppression"
+}

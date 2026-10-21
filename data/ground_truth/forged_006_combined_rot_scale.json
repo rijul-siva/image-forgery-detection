@@ -1,0 +1,26 @@
+{
+    "dataset_type": "synthetic_benchmark",
+    "source_image": "original_001.png",
+    "forged_image": "forged_006_combined_rot_scale.png",
+    "is_forged": true,
+    "scenario": "forged_006_combined_rot_scale",
+    "description": "Copy-move with +12.0 deg rotation and 1.10x scale",
+    "rotation_degrees": 12.0,
+    "scale_factor": 1.1,
+    "translation_x_px": 330.0,
+    "translation_y_px": 110.0,
+    "translation_distance_px": 347.85054261852173,
+    "coordinate_system": "pixel_space (x: right, y: down, origin: top-left)",
+    "source_region_bbox": [
+        120,
+        160,
+        140,
+        140
+    ],
+    "target_region_bbox": [
+        450,
+        270,
+        140,
+        140
+    ]
+}

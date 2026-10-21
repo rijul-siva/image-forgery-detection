@@ -1,0 +1,26 @@
+{
+    "dataset_type": "synthetic_benchmark",
+    "source_image": "original_001.png",
+    "forged_image": "forged_007_blurred_copy.png",
+    "is_forged": true,
+    "scenario": "forged_007_blurred_copy",
+    "description": "Copy-move with mild Gaussian blur applied to destination patch",
+    "rotation_degrees": 0.0,
+    "scale_factor": 1.0,
+    "translation_x_px": 360.0,
+    "translation_y_px": 90.0,
+    "translation_distance_px": 371.07950630558946,
+    "coordinate_system": "pixel_space (x: right, y: down, origin: top-left)",
+    "source_region_bbox": [
+        120,
+        160,
+        140,
+        140
+    ],
+    "target_region_bbox": [
+        480,
+        250,
+        140,
+        140
+    ]
+}

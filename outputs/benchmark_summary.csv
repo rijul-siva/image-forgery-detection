@@ -1,0 +1,13 @@
+Metric,ORB,SIFT
+Total Images Tested,11,11
+Accuracy,81.8%,100.0%
+Precision,80.0%,100.0%
+Recall,100.0%,100.0%
+F1-Score,0.8889,1.0
+True Positives (TP),8,8
+False Positives (FP),2,0
+Mean Rotation Error,0.11°,0.03°
+Mean Scale Error,5.21%,3.12%
+Mean Translation Error,47.87 px,44.48 px
+Mean Localization IoU,0.738,0.613
+Mean Pipeline Latency,192.0 ms,72.8 ms

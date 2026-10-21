@@ -1,0 +1,7 @@
+{
+    "dataset_type": "synthetic_benchmark",
+    "image_name": "negative_repetitive_windows_001.png",
+    "is_forged": false,
+    "scenario": "repetitive_texture_windows",
+    "description": "Architectural repetitive window grid for stress-testing false-positive suppression"
+}
