@@ -11,7 +11,7 @@ Stages (matches `zed.md` §5, Steps 4-11):
   1. extract_features()              (Step 4)
   2. match_features()                (Step 5, 6.1-6.3)
   3. suppress_repetitive_patterns()  (Step 6.4)
-  4. verify_geometric()              (Step 7)
+  4. verify_geometric_clustered()    (Step 7)
   5. decompose_affine()              (Step 8)
   6. localize_forgery()              (Step 9, 10, 11)
   7. Visualization overlays          (used by the UI as well)
@@ -35,7 +35,7 @@ from src.utils.data_types import (
 
 from .feature_extraction import extract_features
 from .feature_matching import match_features, suppress_repetitive_patterns
-from .geometric_verification import verify_geometric
+from .geometric_verification import verify_geometric, verify_geometric_clustered
 from .localization import localize_forgery
 from .parameters import decompose_affine, physical_translation
 from .visualization import draw_matches, draw_regions, draw_transformation_arrow
@@ -53,6 +53,9 @@ DEFAULTS = {
     "forgery_min_inliers": 8,
     "forgery_min_inlier_ratio": 0.08,
     "suppress_repetitive": True,
+    "clustered_verification": True,
+    "displacement_tolerance": 3.0,
+    "max_periodicity": 0.5,
 }
 
 
@@ -61,6 +64,9 @@ def _empty_result(
     num_total_matches: int = 0,
     keypoints_vis: Optional[np.ndarray] = None,
     raw_matches_vis: Optional[np.ndarray] = None,
+    periodic_lattices: Optional[list] = None,
+    num_displacement_clusters: int = 0,
+    candidate_scores: Optional[list] = None,
 ) -> CopyMoveResult:
     return CopyMoveResult(
         forgery_detected=False,
@@ -80,6 +86,9 @@ def _empty_result(
         raw_mask=None,
         closed_mask=None,
         dilated_mask=None,
+        periodic_lattices=periodic_lattices if periodic_lattices is not None else [],
+        num_displacement_clusters=num_displacement_clusters,
+        candidate_scores=candidate_scores if candidate_scores is not None else [],
     )
 
 
@@ -96,6 +105,9 @@ def run_copy_move_analysis(
     forgery_min_inliers: int = DEFAULTS["forgery_min_inliers"],
     forgery_min_inlier_ratio: float = DEFAULTS["forgery_min_inlier_ratio"],
     suppress_repetitive: bool = DEFAULTS["suppress_repetitive"],
+    clustered_verification: bool = DEFAULTS["clustered_verification"],
+    displacement_tolerance: float = DEFAULTS["displacement_tolerance"],
+    max_periodicity: float = DEFAULTS["max_periodicity"],
     preprocess_scale: float = 1.0,
 ) -> CopyMoveResult:
     """
@@ -112,6 +124,14 @@ def run_copy_move_analysis(
         The preprocessing resize ratio (`PreprocessResult.scale_factor`),
         used to report region metrics in native photo coordinates. Defaults
         to 1.0 (analysis coordinates == native coordinates).
+    clustered_verification : bool
+        Group the matches by their shift vector and fit a model per group
+        instead of running a single global RANSAC. This keeps a repetitive
+        interface (a table whose columns repeat every ~71 px) from
+        out-voting a genuine, localized copy-move forgery.
+    max_periodicity : float
+        A hypothesis whose periodicity score exceeds this value is
+        reported as repeated structure rather than as a forgery.
 
     Returns
     -------
@@ -163,13 +183,29 @@ def run_copy_move_analysis(
         )
 
     # --- Step 7: RANSAC geometric verification (DIP Stage 4) --------------
-    geom = verify_geometric(
-        matches,
-        ransac_threshold=ransac_threshold,
-        min_match_count=min_match_count,
-        max_iters=max_iters,
-        confidence=confidence,
-    )
+    if clustered_verification:
+        # Group the matches by their displacement vector first, then fit a
+        # model per group. A periodic UI (columns repeating every ~71 px)
+        # can no longer out-vote a real, localized copy-move forgery.
+        geom = verify_geometric_clustered(
+            matches,
+            image_shape=image_shape,
+            ransac_threshold=ransac_threshold,
+            min_match_count=min_match_count,
+            max_iters=max_iters,
+            confidence=confidence,
+            displacement_tolerance=displacement_tolerance,
+        )
+    else:
+        geom = verify_geometric(
+            matches,
+            ransac_threshold=ransac_threshold,
+            min_match_count=min_match_count,
+            max_iters=max_iters,
+            confidence=confidence,
+        )
+
+    periodic_lattices = [f.summary() for f in getattr(geom, "periodic_families", [])]
 
     # Visualization with inliers (green) and outliers (red)
     inlier_mask = geom.inlier_mask
@@ -194,6 +230,9 @@ def run_copy_move_analysis(
             raw_mask=None,
             closed_mask=None,
             dilated_mask=None,
+            periodic_lattices=periodic_lattices,
+            num_displacement_clusters=getattr(geom, "num_displacement_clusters", 0),
+            candidate_scores=getattr(geom, "candidate_scores", []),
         )
 
     # --- Step 8: affine decomposition ------------------------------------
@@ -213,14 +252,22 @@ def run_copy_move_analysis(
             translation_distance=dist,
         )
 
-    # Decide "forgery_detected". Two thresholds both must pass:
+    # Decide "forgery_detected". Three thresholds all must pass:
     #   (a) at least `forgery_min_inliers` RANSAC inliers
     #   (b) inlier/total ratio at least `forgery_min_inlier_ratio`
+    #   (c) the winning hypothesis must not look like periodic structure
+    #       (a lattice that repeats every N pixels chains and covers the
+    #       whole image; a real duplicated region is a dead end)
     num_inliers = geom.num_inliers
     inlier_ratio = (num_inliers / num_total_matches) if num_total_matches else 0.0
+    periodicity = 0.0
+    candidate_scores = getattr(geom, "candidate_scores", [])
+    if candidate_scores:
+        periodicity = float(candidate_scores[0].get("periodicity", 0.0))
     forgery_detected = (
         num_inliers >= forgery_min_inliers
         and inlier_ratio >= forgery_min_inlier_ratio
+        and periodicity <= max_periodicity
     )
 
     # Confidence is the inlier ratio (experimental score).
@@ -261,6 +308,9 @@ def run_copy_move_analysis(
         raw_mask=loc.raw_mask if loc.raw_mask is not None and loc.raw_mask.max() > 0 else None,
         closed_mask=loc.closed_mask if loc.closed_mask is not None and loc.closed_mask.max() > 0 else None,
         dilated_mask=loc.dilated_mask if loc.dilated_mask is not None and loc.dilated_mask.max() > 0 else None,
+        periodic_lattices=periodic_lattices,
+        num_displacement_clusters=getattr(geom, "num_displacement_clusters", 0),
+        candidate_scores=getattr(geom, "candidate_scores", []),
     )
 
 

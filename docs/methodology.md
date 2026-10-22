@@ -32,8 +32,8 @@ PixelGuard implements a multi-stage forensic analysis pipeline designed to detec
 │ 1. Feature Detection (ORB / SIFT)       │  │ 1. Error Level Analysis (ELA)           │
 │ 2. Same-Image Descriptor Matching (k=3) │  │    - Controlled JPEG recompression (q=95)│
 │ 3. Lowe's Ratio + Spatial Suppression   │  │    - Difference amplification (alpha=20) │
-│ 4. RANSAC Geometric Verification (2x3)  │  │    - Statistical suspicion classification│
-│ 5. Affine Parameter Decomposition       │  │ 2. EXIF Metadata Inspection             │
+│ 4. Shift Clustering + Lattice Rejection │  │    - Statistical suspicion classification│
+│ 5. Multi-Hypothesis RANSAC (2x3)       │  │ 2. EXIF Metadata Inspection             │
 │ 6. Adaptive Multi-Cluster Localization  │  │    - Camera Make / Model verification   │
 │ 7. Morphological Mask Refinement        │  │    - Editing software tags (Photoshop)  │
 │ 8. Region Metrics (BBox, Area, Moments) │  │    - Privacy stripping detection        │
@@ -124,7 +124,7 @@ Unlike two-image stereo matching, copy-move matching compares all descriptors wi
 
 ---
 
-### 2.4 Stage 4: Geometric Verification via RANSAC
+### 2.4 Stage 4: Geometric Verification via RANSAC (displacement-clustered, multi-hypothesis)
 
 A copy-move manipulation within a single planar photograph preserves geometric similarity (uniform scale, in-plane rotation, and 2D translation). Random false matches do not share a coherent transformation.
 
@@ -136,6 +136,38 @@ Using `cv2.estimateAffinePartial2D` with RANSAC:
 - **Inlier criterion:** Reprojection error below threshold $\tau_{\text{reproj}}$ (default: $3.0\text{ px}$):
   $$\|\mathbf{p}'_i - \mathbf{M} \tilde{\mathbf{p}}_i\|_2 \le \tau_{\text{reproj}}$$
 - **Confidence threshold:** RANSAC runs up to $2000$ iterations with $99.5\%$ consensus probability.
+
+#### 2.4.1 Why a single global fit is not enough
+
+`cv2.estimateAffinePartial2D` searches for **one** dominant model in the whole match set. A screenshot that contains a repetitive interface — a weather table whose columns repeat every $\Delta \approx 71\text{ px}$, a row of identical widgets — produces hundreds of matches sharing a single translation. That periodic family can out-vote a genuine, localized duplication (e.g. $160$ lattice inliers against $97$ forgery inliers), so the single global fit locks onto the lattice and the forgery is reported as a pile of outliers.
+
+#### 2.4.2 Shift-vector clustering
+
+Following the classical shift-vector formulation (Amerini et al., *Image Forgery Detection by Duplicating the Same Image Region*, IEEE TIFS 2012), the matches are first grouped by their displacement vector:
+$$\vec{d}_i = (x_2 - x_1,\; y_2 - y_1)$$
+Two matches belong to the same cluster when $\|\vec{d}_i - \vec{d}_j\|_2 \le \tau_{\text{disp}}$ (default: $3\text{ px}$). Clustering is grid-accelerated and each cluster is kept compact by a leader split.
+
+#### 2.4.3 Multi-harmonic periodic lattice detection
+
+A lattice manifests itself as shift vectors that are integer multiples of one base step $\vec{b}$:
+$$\vec{d}_k \approx k\,\vec{b}, \qquad k \in \mathbb{Z}\setminus\{0\}$$
+A vector is a harmonic of $\vec{b}$ when it is parallel to $\vec{b}$ (lateral residual bounded by a few pixels, not by a percentage of its length) and its parallel component equals $k|\vec{b}|$ within tolerance. The harmonic order is capped at $k \le 16$: the repeats of a periodic structure are neighbours (column $1\!\to\!2$, $2\!\to\!3$, …), so a shift of $70$ base steps is a coincidence, not a lattice member. Detected lattices are reported to the interface with their base step and harmonics, and their matches are excluded from the global fit.
+
+#### 2.4.4 Multi-hypothesis scoring
+
+A similarity model is fitted to every displacement cluster and to the non-lattice remainder; models that agree (scale within $2\%$, rotation within $1.5^\circ$, displacement within $8\text{ px}$) are merged, because a scaled copy-move smears its shift vector over several clusters while still agreeing on the model.
+
+Each hypothesis is then scored by how much it looks like a *real duplication* rather than a repetition:
+
+| Signal | Meaning |
+| :--- | :--- |
+| $\rho_{\text{chain}}$ | Fraction of the hypothesis' destinations that are also the source of another correspondence *inside* the hypothesis — a single-offset repetition chains cell by cell. |
+| $\rho_{\text{repeat}}$ | Fraction of relations elsewhere in the image that touch the hypothesis' regions with a **comparable** shift magnitude — a multi-hop lattice matches a column to several neighbours. Relations an order of magnitude smaller (a patch's own internal detail) are ignored. |
+| $\rho_{\text{scatter}}$ | Fraction of the image covered by the source points — a lattice spreads over the whole scene, a copied region does not. |
+
+$$\text{periodicity} = \max(\rho_{\text{chain}},\ \rho_{\text{repeat}},\ \rho_{\text{scatter}}), \qquad \text{score} = N_{\text{inliers}}\,(1 - \text{periodicity})^2$$
+
+The verdict additionally requires $\text{periodicity} \le 0.5$, so a lattice can never be reported as a forgery.
 
 ---
 

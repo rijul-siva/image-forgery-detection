@@ -77,6 +77,11 @@ class CopyMoveResult:
     raw_mask: Optional[np.ndarray] = None  # Binary keypoint footprint mask before morphology (DIP Stage 5.1)
     closed_mask: Optional[np.ndarray] = None  # Mask after morphological closing (DIP Stage 5.2)
     dilated_mask: Optional[np.ndarray] = None  # Mask after morphological dilation (DIP Stage 5.3)
+    # Displacement-clustering diagnostics: periodic lattices (repeating UI
+    # structure) that were recognised and excluded from the forgery verdict.
+    periodic_lattices: list = field(default_factory=list)      # list of dicts (base step, multiples, match count)
+    num_displacement_clusters: int = 0                         # number of distinct shift-vector groups
+    candidate_scores: list = field(default_factory=list)       # per-hypothesis score breakdown
 
 
 @dataclass

@@ -113,7 +113,9 @@ def report_to_dict(report: ForensicReport) -> dict:
             "inlier_matches": cm.num_inlier_matches,
             "confidence_score": round(float(cm.confidence_score), 4),
             "transform_parameters": tp_dict,
-            "regions": regions_list
+            "regions": regions_list,
+            "displacement_clusters": cm.num_displacement_clusters,
+            "ignored_periodic_lattices": list(cm.periodic_lattices),
         },
         "ela_analysis": {
             "suspicion_level": report.ela.suspicion_level,
@@ -232,10 +234,9 @@ def main():
             st.divider()
             
             # Interactive Tabs
-            tab1, tab_dip, tab2, tab3, tab4, tab5 = st.tabs([
+            tab1, tab_dip, tab3, tab4, tab5 = st.tabs([
                 "📷 Overview", 
                 "🔬 Step-by-Step DIP Pipeline",
-                "🔍 Copy-Move Detection", 
                 "⚡ ELA Analysis", 
                 "📋 Metadata / EXIF", 
                 "💾 Export Report"
@@ -373,6 +374,29 @@ def main():
                             st.markdown(f"- **Euclidean Distance:** `{cm.transform_params.translation_distance:.1f} px`")
                         else:
                             st.info("No consensus geometric transformation found.")
+
+                        # Repetitive UI structures (a table whose columns
+                        # repeat every N pixels) are recognised as lattices
+                        # and excluded from the forgery verdict.
+                        if cm.periodic_lattices:
+                            st.markdown("### Ignored Periodic Lattices")
+                            for lat in cm.periodic_lattices:
+                                harmonics = ", ".join(str(h) for h in lat.get("harmonics", []))
+                                st.markdown(
+                                    f"- **Base step:** `{lat.get('base_step_x', 0):.1f}, {lat.get('base_step_y', 0):.1f} px` "
+                                    f"(length `{lat.get('base_step_length', 0):.1f} px`) — "
+                                    f"harmonics `{harmonics}` — `{lat.get('num_matches', 0)}` matches"
+                                )
+                            st.caption(
+                                "These shift vectors repeat at a constant step, which is the "
+                                "signature of a repetitive interface (e.g. a weather table) "
+                                "rather than of a duplicated region."
+                            )
+                        if cm.num_displacement_clusters:
+                            st.caption(
+                                f"Matched against {cm.num_displacement_clusters} distinct "
+                                "shift-vector groups."
+                            )
 
                 # --- DIP STAGE 5: Mathematical Morphology & Segmentation ---
                 with st.expander("📍 DIP Stage 5: Binary Morphology & Spatial Region Segmentation", expanded=True):

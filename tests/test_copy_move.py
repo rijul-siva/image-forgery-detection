@@ -14,7 +14,16 @@ from src.copy_move.feature_matching import (
     suppress_repetitive_patterns,
     MatchPair,
 )
-from src.copy_move.geometric_verification import verify_geometric, GeometricResult
+from src.copy_move.displacement_clustering import (
+    cluster_displacements,
+    detect_periodic_families,
+    harmonic_multiple,
+    participation_ratio,
+)
+from src.copy_move.geometric_verification import (
+    verify_geometric,
+    verify_geometric_clustered,
+)
 from src.copy_move.parameters import (
     decompose_affine,
     reconstruct_affine,
@@ -384,3 +393,229 @@ def test_run_copy_move_analysis_synthetic_forgery():
     assert res.num_inlier_matches >= 4
     assert res.transform_params is not None
     assert res.transform_params.scale_factor == pytest.approx(1.0, abs=0.1)
+
+
+# ---- 7. Displacement Clustering & Multi-Hypothesis Verification ----
+
+def _lattice_matches(step=71.0, columns=8, rows=8, x0=100.0, y0=100.0, cell=12.0, max_hop=1):
+    """
+    Matches between the columns of a periodic grid (a weather table whose
+    columns repeat every `step` pixels).
+
+    The matches chain: the destination of one match is the source of the
+    next one, which is exactly what makes a periodic texture different from
+    a duplicated region. With `max_hop` > 1 the grid also produces the
+    longer hops (column 1 -> 3), i.e. the harmonic structure of a lattice.
+    """
+    matches = []
+    idx = 0
+    for col in range(columns):
+        for hop in range(1, max_hop + 1):
+            if col + hop >= columns:
+                continue
+            for row in range(rows):
+                for k in range(3):
+                    x = x0 + col * step + k * 4.0
+                    y = y0 + row * cell
+                    matches.append(MatchPair(
+                        src_idx=idx, dst_idx=10_000 + idx,
+                        src_xy=(x, y), dst_xy=(x + step * hop, y), distance=10.0,
+                    ))
+                    idx += 1
+    return matches
+
+
+def _forgery_matches(count=40, dx=-224.4, dy=504.2, x0=900.0, y0=100.0, w=160.0, h=120.0):
+    """Matches of a localized region that was copied elsewhere in the image."""
+    rng = np.random.default_rng(5)
+    matches = []
+    for i in range(count):
+        x = x0 + float(rng.uniform(0.0, w))
+        y = y0 + float(rng.uniform(0.0, h))
+        matches.append(MatchPair(
+            src_idx=i, dst_idx=20_000 + i,
+            src_xy=(x, y), dst_xy=(x + dx, y + dy), distance=10.0,
+        ))
+    return matches
+
+
+def test_cluster_displacements_groups_by_shift_vector():
+    """Matches with the same shift vector end up in the same cluster."""
+    matches = _lattice_matches(step=71.0, columns=4, rows=4)
+    clusters = cluster_displacements(matches, tolerance=3.0)
+
+    assert len(clusters) == 1
+    assert clusters[0].count == len(matches)
+    assert clusters[0].displacement[0] == pytest.approx(71.0, abs=1.0)
+    assert clusters[0].displacement[1] == pytest.approx(0.0, abs=1.0)
+
+
+def test_cluster_displacements_separates_different_shifts():
+    matches = _lattice_matches(step=71.0, columns=4, rows=4)
+    matches += _forgery_matches(count=20)
+    clusters = cluster_displacements(matches, tolerance=3.0)
+    assert len(clusters) == 2
+    assert sorted(c.count for c in clusters) == [20, len(matches) - 20]
+
+
+def test_detect_periodic_families_finds_harmonic_lattice():
+    """Shift vectors that are integer multiples of a base step form a lattice."""
+    matches = []
+    for n in range(1, 6):
+        for i in range(12):
+            matches.append(MatchPair(
+                src_idx=len(matches), dst_idx=50_000 + len(matches),
+                src_xy=(100.0 + i * 5.0, 200.0 + i * 3.0),
+                dst_xy=(100.0 + i * 5.0 + 71.0 * n, 200.0 + i * 3.0),
+                distance=10.0,
+            ))
+
+    clusters = cluster_displacements(matches, tolerance=3.0)
+    families = detect_periodic_families(clusters)
+
+    assert len(families) == 1
+    family = families[0]
+    assert family.base[0] == pytest.approx(71.0, abs=1.0)
+    assert family.harmonics == [1, 2, 3, 4, 5]
+    assert family.total_matches == len(matches)
+
+
+def test_harmonic_multiple_rejects_non_parallel_vectors():
+    """A vector that is not parallel to the base is not a harmonic of it."""
+    base = np.array([71.0, 0.0])
+    assert harmonic_multiple(base, np.array([142.0, 0.0])) == 2
+    assert harmonic_multiple(base, np.array([-71.0, 0.0])) == -1
+    # Tilted well away from the base axis.
+    assert harmonic_multiple(base, np.array([200.0, 120.0])) is None
+    # Parallel but far outside the base axis laterally.
+    assert harmonic_multiple(base, np.array([142.0, 40.0])) is None
+
+
+def test_harmonic_multiple_caps_harmonic_order():
+    """A shift that is a large multiple of the base is not a lattice member."""
+    base = np.array([5.0, 0.0])
+    assert harmonic_multiple(base, np.array([35.0, 0.0]), max_multiple=16) == 7
+    assert harmonic_multiple(base, np.array([100.0, 0.0]), max_multiple=16) is None
+
+
+def test_participation_ratio_separates_lattice_from_duplicated_region():
+    """A periodic texture chains; a one-off duplicated region does not."""
+    lattice = _lattice_matches(step=71.0, columns=6, rows=6)
+    lattice_src = np.array([m.src_xy for m in lattice])
+    lattice_dst = np.array([m.dst_xy for m in lattice])
+    assert participation_ratio(lattice_src, lattice_dst, tolerance=2.0) > 0.5
+
+    forgery = _forgery_matches(count=40)
+    forgery_src = np.array([m.src_xy for m in forgery])
+    forgery_dst = np.array([m.dst_xy for m in forgery])
+    assert participation_ratio(forgery_src, forgery_dst, tolerance=2.0) == 0.0
+
+
+def test_verify_geometric_clustered_prefers_forgery_over_periodic_grid():
+    """
+    The single-model RANSAC trap: a periodic grid out-votes the forgery.
+
+    The grid produces far more matches than the duplicated region, so a
+    global RANSAC locks onto the grid. The clustered verification must
+    still report the copy-move.
+    """
+    lattice = _lattice_matches(step=71.0, columns=12, rows=12)   # 396 matches
+    forgery = _forgery_matches(count=40)
+    matches = lattice + forgery
+
+    global_result = verify_geometric(matches, ransac_threshold=3.0, min_match_count=10)
+    assert global_result.num_inliers > 40  # the grid wins the majority vote
+
+    result = verify_geometric_clustered(
+        matches, image_shape=(900, 1200), ransac_threshold=3.0, min_match_count=10
+    )
+
+    assert result.affine_matrix is not None
+    assert result.num_inliers >= 40
+    # The winner is the duplicated region, not the grid.
+    displacement = np.array([
+        result.inlier_dst[:, 0].mean() - result.inlier_src[:, 0].mean(),
+        result.inlier_dst[:, 1].mean() - result.inlier_src[:, 1].mean(),
+    ])
+    assert displacement[0] == pytest.approx(-224.4, abs=2.0)
+    assert displacement[1] == pytest.approx(504.2, abs=2.0)
+
+
+def test_verify_geometric_clustered_reports_periodic_lattice():
+    """The periodic grid is recognised and reported instead of being a forgery."""
+    lattice = _lattice_matches(step=71.0, columns=12, rows=12, max_hop=3)
+    forgery = _forgery_matches(count=40)
+    result = verify_geometric_clustered(
+        lattice + forgery, image_shape=(900, 1200), ransac_threshold=3.0
+    )
+
+    assert len(result.periodic_families) >= 1
+    summary = result.periodic_families[0].summary()
+    assert summary["base_step_length"] == pytest.approx(71.0, abs=1.0)
+    assert summary["harmonics"] == [1, 2, 3]
+
+    # The winning hypothesis is not the lattice.
+    assert result.candidate_scores[0]["periodicity"] < 0.5
+
+
+def test_verify_geometric_clustered_pure_lattice_is_periodic():
+    """Without a duplicated region the winner must look like periodic structure."""
+    lattice = _lattice_matches(step=71.0, columns=12, rows=12)
+    result = verify_geometric_clustered(
+        lattice, image_shape=(900, 1200), ransac_threshold=3.0
+    )
+
+    assert result.candidate_scores, "expected at least one candidate hypothesis"
+    assert result.candidate_scores[0]["periodicity"] > 0.5
+
+
+def test_pipeline_ignores_periodic_ui_but_reports_forgery():
+    """End-to-end: a screenshot with a periodic table plus a copied '22'."""
+    canvas = np.full((900, 1200, 3), 245, dtype=np.uint8)
+
+    # --- periodic weather table: identical columns every 71 px ---
+    cell = np.full((90, 71, 3), 250, dtype=np.uint8)
+    cv2.circle(cell, (30, 30), 20, (170, 170, 170), -1)
+    cv2.circle(cell, (30, 30), 9, (90, 140, 200), -1)
+    cv2.putText(cell, "22", (8, 78), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (40, 40, 40), 2, cv2.LINE_AA)
+    for col in range(10):
+        for row in range(6):
+            canvas[120 + row * 90:210 + row * 90, 120 + col * 71:191 + col * 71] = cell
+
+    # --- duplicated "22", scaled by 1.037 and pasted at the bottom left ---
+    label = np.full((120, 160, 3), 250, dtype=np.uint8)
+    cv2.putText(label, "22", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 3.0, (20, 20, 20), 6, cv2.LINE_AA)
+    rng = np.random.default_rng(11)
+    for _ in range(10):
+        cv2.circle(
+            label,
+            (int(rng.integers(2, 155)), int(rng.integers(2, 115))),
+            int(rng.integers(2, 7)),
+            (int(rng.integers(60, 240)),) * 3, -1,
+        )
+    canvas[100:220, 880:1040] = label
+
+    scaled = cv2.resize(label, None, fx=1.037, fy=1.037, interpolation=cv2.INTER_LINEAR)
+    sh, sw = scaled.shape[:2]
+    dst_x, dst_y = 880 - 224, 100 + 504
+    canvas[dst_y:dst_y + sh, dst_x:dst_x + sw] = scaled
+
+    gray = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
+    res = run_copy_move_analysis(gray, canvas, detector="orb", ratio=0.75)
+
+    assert res.forgery_detected is True
+    assert res.transform_params is not None
+    tp = res.transform_params
+    # The two regions are identical, so which one is the "copy" is not
+    # recoverable from the geometry — accept either orientation.
+    assert tp.scale_factor == pytest.approx(1.037, abs=0.05) or \
+        tp.scale_factor == pytest.approx(1.0 / 1.037, abs=0.05)
+    assert tp.translation_x * tp.translation_y < 0  # diagonal, opposite signs
+    assert math.hypot(tp.translation_x, tp.translation_y) == pytest.approx(
+        math.hypot(224.0, 504.0), abs=30.0
+    )
+    # The periodic table is recognised, not reported as the forgery.
+    assert any(
+        abs(lattice["base_step_length"] - 71.0) < 3.0
+        for lattice in res.periodic_lattices
+    )
