@@ -184,7 +184,7 @@ Evaluated across the 11-image benchmark dataset (8 positive copy-move scenarios,
 
 ## 7. Documentation Index
 
-- [`docs/methodology.md`](file:///c:/Users/bijo/Desktop/Project/image-forgery-detection/docs/methodology.md): Full mathematical formulation of preprocessing, matching, RANSAC, affine decomposition, and morphology.
-- [`docs/experiments.md`](file:///c:/Users/bijo/Desktop/Project/image-forgery-detection/docs/experiments.md): Comprehensive test results, parameter comparison tables, and benchmark data.
-- [`docs/limitations.md`](file:///c:/Users/bijo/Desktop/Project/image-forgery-detection/docs/limitations.md): Detailed analysis of algorithmic blind spots (smooth inpainting, perspective distortion, repetitive patterns).
-- [`PixelGuard_Final_Plan.md`](file:///c:/Users/bijo/Desktop/Project/image-forgery-detection/PixelGuard_Final_Plan.md): Master team specification and course plan.
+- [`docs/methodology.md`](docs/methodology.md): Full mathematical formulation of preprocessing, matching, RANSAC, affine decomposition, and morphology.
+- [`docs/experiments.md`](docs/experiments.md): Comprehensive test results, parameter comparison tables, and benchmark data.
+- [`docs/limitations.md`](docs/limitations.md): Detailed analysis of algorithmic blind spots (smooth inpainting, perspective distortion, repetitive patterns).
+- [`PixelGuard_Final_Plan.md`](PixelGuard_Final_Plan.md): Master team specification and course plan.
