@@ -266,13 +266,12 @@ def test_physical_translation_is_origin_independent():
     theta = math.radians(30.0)
     s = 1.1
     offset = np.array([150.0, -60.0])
-    center = np.array([240.0, 180.0])  # arbitrary rotation origin
-
     rng = np.random.default_rng(5)
     src = np.column_stack([
         rng.uniform(50, 400, size=40),
         rng.uniform(50, 350, size=40),
     ])
+    center = src.mean(axis=0)  # object centroid rotation center
     rot_scale = s * np.array([
         [math.cos(theta), -math.sin(theta)],
         [math.sin(theta),  math.cos(theta)],

@@ -246,8 +246,11 @@ def main():
         gt_theta_abs = 180.0 - gt_theta_abs
     theta_err = abs(theta_abs - gt_theta_abs)
 
-    # Scale is always positive; compare ratio.
-    scale_err = abs(tp.scale_factor - gt["scale"]) / gt["scale"] * 100.0
+    # Scale: compare against both forward (s) and inverse (1/s) transform directions.
+    scale_err = min(
+        abs(tp.scale_factor - gt["scale"]),
+        abs((1.0 / max(tp.scale_factor, 1e-6)) - gt["scale"])
+    ) / gt["scale"] * 100.0
 
     # Translation: use the more permissive of "distance error" and
     # "vector dot product" — also tolerant to sign flips in tx, ty

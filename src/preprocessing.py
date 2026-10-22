@@ -50,11 +50,12 @@ def preprocess_image(
         new_height = int(round(original_height * scale_factor))
         image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
 
-    # Optional mild Gaussian smoothing to reduce sensor/compression noise
+    # Gaussian smoothing to demonstrate spatial noise reduction
+    denoised_image = cv2.GaussianBlur(image, (3, 3), 0.5)
     if denoise:
-        image = cv2.GaussianBlur(image, (3, 3), 0.5)
+        image = denoised_image
 
-    # Convert to grayscale for feature detection
+    # Convert to grayscale for feature detection (0.299 R + 0.587 G + 0.114 B)
     gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
     return PreprocessResult(
@@ -62,5 +63,6 @@ def preprocess_image(
         gray_image=gray_image,
         scale_factor=float(scale_factor),
         original_width=int(original_width),
-        original_height=int(original_height)
+        original_height=int(original_height),
+        denoised_image=denoised_image
     )

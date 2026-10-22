@@ -232,8 +232,9 @@ def main():
             st.divider()
             
             # Interactive Tabs
-            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            tab1, tab_dip, tab2, tab3, tab4, tab5 = st.tabs([
                 "📷 Overview", 
+                "🔬 Step-by-Step DIP Pipeline",
                 "🔍 Copy-Move Detection", 
                 "⚡ ELA Analysis", 
                 "📋 Metadata / EXIF", 
@@ -264,7 +265,185 @@ def main():
                         for flag in report.metadata.flags:
                             st.warning(f"⚠️ {flag}")
 
-            with tab2:
+            with tab_dip:
+                st.subheader("🔬 Digital Image Processing (DIP) — Step-by-Step Execution")
+                st.write(
+                    "This section displays the intermediate image output and mathematical formulation "
+                    "at each discrete Digital Image Processing stage of the forensic pipeline."
+                )
+                
+                # --- DIP STAGE 1: Preprocessing & Spatial Filtering ---
+                with st.expander("📍 DIP Stage 1: Spatial Sampling, Grayscale Conversion & Denoising", expanded=True):
+                    st.markdown("""
+                    **DIP Concepts:** Color-to-grayscale intensity conversion via luminance weighting 
+                    $Y = 0.299R + 0.587G + 0.114B$, decimation via area interpolation (`cv2.INTER_AREA`), 
+                    and high-frequency noise suppression via 2D Gaussian kernel convolution $G(x,y,\\sigma)$.
+                    """)
+                    d1_col1, d1_col2, d1_col3 = st.columns(3)
+                    with d1_col1:
+                        st.image(
+                            cv2.cvtColor(report.preprocess.color_image, cv2.COLOR_BGR2RGB),
+                            caption=f"1.1 Resized Color ({report.preprocess.color_image.shape[1]}×{report.preprocess.color_image.shape[0]} px)",
+                            use_container_width=True
+                        )
+                    with d1_col2:
+                        st.image(
+                            report.preprocess.gray_image,
+                            caption="1.2 Grayscale Luminance (1-Channel uint8)",
+                            use_container_width=True
+                        )
+                    with d1_col3:
+                        if report.preprocess.denoised_image is not None:
+                            st.image(
+                                cv2.cvtColor(report.preprocess.denoised_image, cv2.COLOR_BGR2RGB),
+                                caption="1.3 Gaussian Filtered (3×3, σ=0.5)",
+                                use_container_width=True
+                            )
+                        else:
+                            st.info("Gaussian smoothing disabled in current run.")
+
+                    # Grayscale Histogram
+                    hist, _ = np.histogram(report.preprocess.gray_image, bins=32, range=(0, 256))
+                    st.caption("Grayscale Intensity Distribution Histogram (32 bins):")
+                    st.bar_chart(hist)
+
+                # --- DIP STAGE 2: Feature Extraction ---
+                with st.expander("📍 DIP Stage 2: Scale-Space Keypoint & Interest Point Detection", expanded=True):
+                    st.markdown("""
+                    **DIP Concepts:** Scale-space multi-scale representation (SIFT Difference-of-Gaussians pyramid / ORB FAST corners with Harris scoring). 
+                    Each keypoint is localized with coordinate $(x,y)$, characteristic scale circle radius $\\sigma$, and dominant gradient orientation $\\theta$.
+                    """)
+                    d2_col1, d2_col2 = st.columns([2, 1])
+                    with d2_col1:
+                        if cm.keypoints_visualization is not None:
+                            st.image(
+                                cv2.cvtColor(cm.keypoints_visualization, cv2.COLOR_BGR2RGB),
+                                caption=f"2.1 Detected Scale-Space Keypoints ({detector.upper()}) with Scale Circles & Orientation Vectors",
+                                use_container_width=True
+                            )
+                    with d2_col2:
+                        st.markdown("### Keypoint Metrics")
+                        st.markdown(f"- **Detector Architecture:** `{detector.upper()}`")
+                        st.markdown(f"- **Total Keypoints Detected:** `{len(cm.inlier_keypoints_src) + len(cm.inlier_keypoints_dst)} verified points`")
+                        st.markdown(f"- **Descriptor Dimensions:** `{'128 continuous floats (SIFT)' if detector == 'sift' else '32 binary bytes / 256 bits (ORB)'}`")
+                        st.markdown(f"- **Distance Metric:** `{'L2 Euclidean Norm' if detector == 'sift' else 'Hamming Distance'}`")
+
+                # --- DIP STAGE 3: Feature Matching & Filtering ---
+                with st.expander("📍 DIP Stage 3: Feature Descriptor Matching & Spatial Suppression", expanded=True):
+                    st.markdown("""
+                    **DIP Concepts:** $k$-Nearest-Neighbor matching ($k=3$), Lowe's ratio test $\\frac{d_1}{d_2} < \\tau$ to eliminate ambiguous matches, 
+                    and spatial distance thresholding $\\|p_i - p_j\\|_2 \\ge d_{\\text{min}}$ to suppress trivial self-matches.
+                    """)
+                    d3_col1, d3_col2 = st.columns([2, 1])
+                    with d3_col1:
+                        if cm.raw_matches_visualization is not None:
+                            st.image(
+                                cv2.cvtColor(cm.raw_matches_visualization, cv2.COLOR_BGR2RGB),
+                                caption="3.1 Candidate Feature Matches Surviving Ratio & Spatial Suppression",
+                                use_container_width=True
+                            )
+                    with d3_col2:
+                        st.markdown("### Matching Parameters")
+                        st.markdown(f"- **Candidate Match Pairs:** `{cm.num_total_matches}`")
+                        st.markdown(f"- **Lowe's Ratio Threshold:** `{ratio:.2f}`")
+                        st.markdown("- **Spatial Suppression Radius:** `10.0 px`")
+
+                # --- DIP STAGE 4: Geometric Verification & RANSAC ---
+                with st.expander("📍 DIP Stage 4: Geometric Transformation Estimation & RANSAC Consensus", expanded=True):
+                    st.markdown("""
+                    **DIP Concepts:** RANSAC (Random Sample Consensus) affine model fitting to separate consensus transformation inliers from spurious background matches:
+                    $$\\begin{bmatrix} x' \\\\ y' \\end{bmatrix} = \\begin{bmatrix} a_{00} & a_{01} \\\\ a_{10} & a_{11} \\end{bmatrix} \\begin{bmatrix} x \\\\ y \\end{bmatrix} + \\begin{bmatrix} t_x \\\\ t_y \\end{bmatrix}$$
+                    Decomposed into physical rotation $\\theta = \\operatorname{atan2}(a_{10}, a_{00})$, scale factor $s = \\sqrt{\\det(A)}$, and translation distance $d = \\sqrt{t_x^2 + t_y^2}$.
+                    """)
+                    d4_col1, d4_col2 = st.columns([2, 1])
+                    with d4_col1:
+                        if cm.match_visualization is not None:
+                            st.image(
+                                cv2.cvtColor(cm.match_visualization, cv2.COLOR_BGR2RGB),
+                                caption="4.1 RANSAC Classification (Green = Geometric Inliers, Red = Outliers)",
+                                use_container_width=True
+                            )
+                    with d4_col2:
+                        st.markdown("### RANSAC Decomposed Parameters")
+                        if cm.transform_params is not None:
+                            st.markdown(f"- **Inlier / Total Matches:** `{cm.num_inlier_matches} / {cm.num_total_matches}` ({cm.confidence_score:.1%})")
+                            st.markdown(f"- **Rotation (θ):** `{cm.transform_params.rotation_degrees:.2f}°`")
+                            st.markdown(f"- **Scale Factor (s):** `{cm.transform_params.scale_factor:.3f}×`")
+                            st.markdown(f"- **Translation (dx, dy):** `({cm.transform_params.translation_x:.1f}, {cm.transform_params.translation_y:.1f}) px`")
+                            st.markdown(f"- **Euclidean Distance:** `{cm.transform_params.translation_distance:.1f} px`")
+                        else:
+                            st.info("No consensus geometric transformation found.")
+
+                # --- DIP STAGE 5: Mathematical Morphology & Segmentation ---
+                with st.expander("📍 DIP Stage 5: Binary Morphology & Spatial Region Segmentation", expanded=True):
+                    st.markdown("""
+                    **DIP Concepts:** Mathematical morphology on binary keypoint masks:
+                    1. **Raw Mask:** Keypoint footprint discs drawn at verified inlier positions.
+                    2. **Morphological Closing:** $A \\bullet B = (A \\oplus B) \\ominus B$ (dilation followed by erosion with $7\\times 7$ ellipse) to fuse interior gaps.
+                    3. **Morphological Dilation:** $A \\oplus B$ to expand coverage to object boundaries.
+                    4. **Connected Components & Contours:** Green's theorem area integration $\\iint dx dy$ and centroid spatial moments $m_{10}/m_{00}, m_{01}/m_{00}$.
+                    """)
+                    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+                    with m_col1:
+                        if cm.raw_mask is not None:
+                            st.image(cm.raw_mask, caption="5.1 Raw Keypoint Binary Mask", use_container_width=True)
+                        else:
+                            st.caption("No mask generated.")
+                    with m_col2:
+                        if cm.closed_mask is not None:
+                            st.image(cm.closed_mask, caption="5.2 Morphological Closing (A • B)", use_container_width=True)
+                        else:
+                            st.caption("No closed mask.")
+                    with m_col3:
+                        if cm.dilated_mask is not None:
+                            st.image(cm.dilated_mask, caption="5.3 Morphological Dilation (A ⊕ B)", use_container_width=True)
+                        else:
+                            st.caption("No dilated mask.")
+                    with m_col4:
+                        if cm.region_visualization is not None:
+                            st.image(
+                                cv2.cvtColor(cm.region_visualization, cv2.COLOR_BGR2RGB),
+                                caption="5.4 Contours & Displacement Vector",
+                                use_container_width=True
+                            )
+
+                # --- DIP STAGE 6: Error Level Analysis (JPEG Compression Forensics) ---
+                with st.expander("📍 DIP Stage 6: Error Level Analysis (JPEG Compression Forensics)", expanded=True):
+                    st.markdown("""
+                    **DIP Concepts:** Frequency-domain Discrete Cosine Transform (DCT) lossy compression analysis. 
+                    Re-saving at quality level $Q=95$ induces error discrepancy $\\Delta(x,y) = |I(x,y) - I_{\\text{JPEG}}(x,y)|$. 
+                    Digital forgeries present localized quantization variance against the uniform background error floor.
+                    """)
+                    e1, e2, e3, e4 = st.columns(4)
+                    with e1:
+                        if report.ela.compressed_image is not None:
+                            st.image(
+                                cv2.cvtColor(report.ela.compressed_image, cv2.COLOR_BGR2RGB),
+                                caption=f"6.1 Re-compressed (JPEG Q={ela_quality})",
+                                use_container_width=True
+                            )
+                    with e2:
+                        if report.ela.raw_diff is not None:
+                            st.image(
+                                cv2.cvtColor(report.ela.raw_diff, cv2.COLOR_BGR2RGB),
+                                caption="6.2 Absolute Difference |I - I_JPEG|",
+                                use_container_width=True
+                            )
+                    with e3:
+                        st.image(
+                            cv2.cvtColor(report.ela.ela_image, cv2.COLOR_BGR2RGB),
+                            caption="6.3 Amplified Error (×20)",
+                            use_container_width=True
+                        )
+                    with e4:
+                        if report.ela.colormap_image is not None:
+                            st.image(
+                                cv2.cvtColor(report.ela.colormap_image, cv2.COLOR_BGR2RGB),
+                                caption="6.4 Jet Colormap Pseudocolor",
+                                use_container_width=True
+                            )
+
+                st.info("💡 **Tip for Review / Viva:** You can also run `python scripts/export_dip_stages.py` in your terminal to save all 14 individual DIP stage images to the `outputs/dip_stages/` folder.")
                 st.subheader("Copy-Move Forgery Analysis & Quantitative Parameters")
                 
                 # Visualizations Side-by-Side

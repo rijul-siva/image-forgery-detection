@@ -175,8 +175,23 @@ def run_ela_analysis(
     if notes:
         desc = f"{desc} {' '.join(notes)}"
 
+    # Raw difference (unamplified)
+    raw_diff = np.clip(diff, 0, 255).astype(np.uint8)
+
+    # Pseudocolor thermal heatmap representation (Jet colormap)
+    ela_gray = cv2.cvtColor(ela_image, cv2.COLOR_BGR2GRAY)
+    colormap_image = cv2.applyColorMap(ela_gray, cv2.COLORMAP_JET)
+
+    mean_diff = float(np.mean(diff))
+    max_diff = float(np.max(diff))
+
     return ELAResult(
         ela_image=ela_image,
         suspicion_level=suspicion_level,
         description=desc,
+        compressed_image=compressed,
+        raw_diff=raw_diff,
+        colormap_image=colormap_image,
+        mean_diff=mean_diff,
+        max_diff=max_diff,
     )

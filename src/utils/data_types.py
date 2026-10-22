@@ -17,6 +17,7 @@ class PreprocessResult:
     scale_factor: float              # How much the image was resized
     original_width: int
     original_height: int
+    denoised_image: Optional[np.ndarray] = None  # Gaussian smoothed image (DIP Stage 1)
 
 
 @dataclass
@@ -70,6 +71,12 @@ class CopyMoveResult:
     mask: Optional[np.ndarray]       # Binary mask of suspicious regions
     match_visualization: Optional[np.ndarray]   # Image with matches drawn
     region_visualization: Optional[np.ndarray]  # Image with regions highlighted
+    # Intermediate DIP stage outputs (for step-by-step forensic inspection)
+    keypoints_visualization: Optional[np.ndarray] = None  # Scale-space keypoints (DIP Stage 2)
+    raw_matches_visualization: Optional[np.ndarray] = None  # Filtered candidate matches before RANSAC (DIP Stage 3)
+    raw_mask: Optional[np.ndarray] = None  # Binary keypoint footprint mask before morphology (DIP Stage 5.1)
+    closed_mask: Optional[np.ndarray] = None  # Mask after morphological closing (DIP Stage 5.2)
+    dilated_mask: Optional[np.ndarray] = None  # Mask after morphological dilation (DIP Stage 5.3)
 
 
 @dataclass
@@ -78,6 +85,12 @@ class ELAResult:
     ela_image: np.ndarray            # ELA heatmap visualization
     suspicion_level: str             # "low", "medium", "high"
     description: str                 # Human-readable summary
+    # Intermediate DIP stage outputs
+    compressed_image: Optional[np.ndarray] = None  # Re-compressed JPEG (DIP Stage 6.1)
+    raw_diff: Optional[np.ndarray] = None  # Absolute pixel difference |I - I_JPEG| (DIP Stage 6.2)
+    colormap_image: Optional[np.ndarray] = None  # Pseudocolor Jet heatmap (DIP Stage 6.4)
+    mean_diff: float = 0.0  # Mean absolute error
+    max_diff: float = 0.0  # Max absolute error
 
 
 @dataclass

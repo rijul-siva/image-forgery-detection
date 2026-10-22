@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import cv2
 import numpy as np
 
 from src.utils.data_types import (
@@ -58,6 +59,8 @@ DEFAULTS = {
 def _empty_result(
     color_image: np.ndarray,
     num_total_matches: int = 0,
+    keypoints_vis: Optional[np.ndarray] = None,
+    raw_matches_vis: Optional[np.ndarray] = None,
 ) -> CopyMoveResult:
     return CopyMoveResult(
         forgery_detected=False,
@@ -72,6 +75,11 @@ def _empty_result(
         mask=None,
         match_visualization=color_image.copy(),
         region_visualization=color_image.copy(),
+        keypoints_visualization=keypoints_vis if keypoints_vis is not None else color_image.copy(),
+        raw_matches_visualization=raw_matches_vis if raw_matches_vis is not None else color_image.copy(),
+        raw_mask=None,
+        closed_mask=None,
+        dilated_mask=None,
     )
 
 
@@ -115,16 +123,25 @@ def run_copy_move_analysis(
 
     image_shape = gray_image.shape  # (H, W)
 
-    # --- Step 4: feature extraction ---------------------------------------
+    # --- Step 4: feature extraction (DIP Stage 2) -------------------------
     try:
         features = extract_features(gray_image, detector=detector)
     except Exception:
         return _empty_result(color_image)
 
-    if features.descriptors is None or len(features.keypoints) < min_match_count:
-        return _empty_result(color_image)
+    # Render rich scale-space keypoint visualization
+    keypoints_vis = cv2.drawKeypoints(
+        color_image,
+        features.keypoints,
+        None,
+        color=(0, 255, 255),
+        flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS
+    )
 
-    # --- Steps 5-6: matching + filtering ----------------------------------
+    if features.descriptors is None or len(features.keypoints) < min_match_count:
+        return _empty_result(color_image, keypoints_vis=keypoints_vis)
+
+    # --- Steps 5-6: matching + filtering (DIP Stage 3) --------------------
     matches = match_features(
         features,
         ratio=ratio,
@@ -135,10 +152,17 @@ def run_copy_move_analysis(
         # tiles) before RANSAC can lock onto the lattice.
         matches = suppress_repetitive_patterns(matches, image_shape=image_shape)
     num_total_matches = len(matches)
-    if num_total_matches == 0:
-        return _empty_result(color_image)
+    raw_matches_vis = draw_matches(color_image, matches, inlier_mask=None)
 
-    # --- Step 7: RANSAC geometric verification ---------------------------
+    if num_total_matches == 0:
+        return _empty_result(
+            color_image,
+            num_total_matches=0,
+            keypoints_vis=keypoints_vis,
+            raw_matches_vis=raw_matches_vis
+        )
+
+    # --- Step 7: RANSAC geometric verification (DIP Stage 4) --------------
     geom = verify_geometric(
         matches,
         ransac_threshold=ransac_threshold,
@@ -147,7 +171,7 @@ def run_copy_move_analysis(
         confidence=confidence,
     )
 
-    # Visualization with whatever matches we have, plus the inlier mask.
+    # Visualization with inliers (green) and outliers (red)
     inlier_mask = geom.inlier_mask
     match_vis = draw_matches(color_image, matches, inlier_mask=inlier_mask)
 
@@ -165,6 +189,11 @@ def run_copy_move_analysis(
             mask=None,
             match_visualization=match_vis,
             region_visualization=color_image.copy(),
+            keypoints_visualization=keypoints_vis,
+            raw_matches_visualization=raw_matches_vis,
+            raw_mask=None,
+            closed_mask=None,
+            dilated_mask=None,
         )
 
     # --- Step 8: affine decomposition ------------------------------------
@@ -197,7 +226,7 @@ def run_copy_move_analysis(
     # Confidence is the inlier ratio (experimental score).
     confidence_score = float(inlier_ratio)
 
-    # --- Steps 9-11: localization & region metrics -----------------------
+    # --- Steps 9-11: localization & region metrics (DIP Stage 5) ---------
     loc = localize_forgery(
         geom.inlier_src,
         geom.inlier_dst,
@@ -227,6 +256,11 @@ def run_copy_move_analysis(
         mask=loc.combined_mask if loc.combined_mask.max() > 0 else None,
         match_visualization=match_vis,
         region_visualization=region_vis,
+        keypoints_visualization=keypoints_vis,
+        raw_matches_visualization=raw_matches_vis,
+        raw_mask=loc.raw_mask if loc.raw_mask is not None and loc.raw_mask.max() > 0 else None,
+        closed_mask=loc.closed_mask if loc.closed_mask is not None and loc.closed_mask.max() > 0 else None,
+        dilated_mask=loc.dilated_mask if loc.dilated_mask is not None and loc.dilated_mask.max() > 0 else None,
     )
 
 

@@ -48,6 +48,9 @@ class LocalizationResult:
     combined_mask: np.ndarray            # uint8 0/255 (both clusters OR'd)
     regions: List[LocalizedRegion]
     image_shape: Tuple[int, int]         # (height, width)
+    raw_mask: Optional[np.ndarray] = None      # Keypoint footprint mask before morphology
+    closed_mask: Optional[np.ndarray] = None   # Mask after morphological closing (A • B)
+    dilated_mask: Optional[np.ndarray] = None  # Mask after morphological dilation (A ⊕ B)
 
 
 def _adaptive_cluster(points: PointArray, image_shape: Tuple[int, int]) -> np.ndarray:
@@ -127,22 +130,37 @@ def _points_to_mask(
     return mask
 
 
-def _refine_mask(mask: np.ndarray) -> np.ndarray:
-    """Morphological closing + dilation, then keep the largest connected component."""
-    if mask is None or mask.size == 0 or mask.max() == 0:
-        return mask
+def _refine_mask_stages(mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Step-by-step mathematical morphology:
+    1. Morphological Closing (A • B = (A ⊕ B) ⊖ B) with an elliptical kernel to fuse interior gaps.
+    2. Morphological Dilation (A ⊕ B) to expand region coverage.
+    3. Connected component analysis to keep the dominant contiguous region.
 
-    # Close small gaps, then dilate to grow the region.
+    Returns
+    -------
+    (closed_mask, dilated_mask, final_component_mask)
+    """
+    if mask is None or mask.size == 0 or mask.max() == 0:
+        return mask, mask, mask
+
+    # Structuring element: 7x7 ellipse
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
     closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
     dilated = cv2.dilate(closed, kernel, iterations=1)
 
-    # Keep only the largest connected component.
+    # Connected component labeling (8-connectivity)
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(dilated, connectivity=8)
     if num_labels <= 1:
-        return dilated
+        return closed, dilated, dilated
     largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
     out = np.where(labels == largest, 255, 0).astype(np.uint8)
+    return closed, dilated, out
+
+
+def _refine_mask(mask: np.ndarray) -> np.ndarray:
+    """Morphological closing + dilation, then keep the largest connected component."""
+    _, _, out = _refine_mask_stages(mask)
     return out
 
 
@@ -228,13 +246,21 @@ def localize_forgery(
     """
     h, w = image_shape[:2]
     combined_mask = np.zeros((h, w), dtype=np.uint8)
+    combined_raw_mask = np.zeros((h, w), dtype=np.uint8)
+    combined_closed_mask = np.zeros((h, w), dtype=np.uint8)
+    combined_dilated_mask = np.zeros((h, w), dtype=np.uint8)
 
     src = np.asarray(inlier_src, dtype=np.float64).reshape(-1, 2)
     dst = np.asarray(inlier_dst, dtype=np.float64).reshape(-1, 2)
 
     if len(src) == 0 and len(dst) == 0:
         return LocalizationResult(
-            combined_mask=combined_mask, regions=[], image_shape=image_shape
+            combined_mask=combined_mask,
+            regions=[],
+            image_shape=image_shape,
+            raw_mask=combined_raw_mask,
+            closed_mask=combined_closed_mask,
+            dilated_mask=combined_dilated_mask
         )
 
     regions: List[LocalizedRegion] = []
@@ -244,9 +270,9 @@ def localize_forgery(
         src_points: PointArray,
         dst_points: PointArray,
     ) -> None:
-        nonlocal combined_mask
+        nonlocal combined_mask, combined_raw_mask, combined_closed_mask, combined_dilated_mask
         raw_mask = _points_to_mask(points, image_shape)
-        refined = _refine_mask(raw_mask)
+        closed_m, dilated_m, refined = _refine_mask_stages(raw_mask)
         info = _compute_region_info(refined, image_shape, scale_factor)
         if info is None:
             return
@@ -258,6 +284,9 @@ def localize_forgery(
                 keypoints_dst=dst_points,
             )
         )
+        combined_raw_mask = cv2.bitwise_or(combined_raw_mask, raw_mask)
+        combined_closed_mask = cv2.bitwise_or(combined_closed_mask, closed_m)
+        combined_dilated_mask = cv2.bitwise_or(combined_dilated_mask, dilated_m)
         combined_mask = cv2.bitwise_or(combined_mask, refined)
 
     # Source-side regions.
@@ -281,7 +310,12 @@ def localize_forgery(
     # Sort regions by area, largest first — easier for the UI.
     regions.sort(key=lambda r: r.info.area_px, reverse=True)
     return LocalizationResult(
-        combined_mask=combined_mask, regions=regions, image_shape=image_shape
+        combined_mask=combined_mask,
+        regions=regions,
+        image_shape=image_shape,
+        raw_mask=combined_raw_mask,
+        closed_mask=combined_closed_mask,
+        dilated_mask=combined_dilated_mask
     )
 
 

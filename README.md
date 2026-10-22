@@ -138,21 +138,28 @@ streamlit run app/streamlit_app.py
 - Upload any `.jpg` or `.png` photograph.
 - Select the detector (`ORB` for speed, `SIFT` for high precision).
 - Click **Analyze Image** to view synchronized feature matches, localized regions, parameter reports, ELA heatmaps, and EXIF metadata.
+- Open the **🔬 Step-by-Step DIP Pipeline** tab to inspect intermediate outputs for each classical image processing stage (Sampling, Grayscale, Gaussian Filtering, Scale-Space Keypoints, Lowe's Ratio Matching, RANSAC, Mathematical Morphology, Connected Components, and ELA).
 - Export findings as structured JSON.
 
 ### B. Run the Automated Test Suite (Pytest)
-Execute the unit and integration tests:
+Execute all unit and integration tests (including the individual DIP stages test suite):
 ```bash
 pytest -v
 ```
 
-### C. Run Dataset Generation
+### C. Export Individual DIP Process Stages
+Inspect and save the intermediate output images for every DIP stage to `outputs/dip_stages/`:
+```bash
+python scripts/export_dip_stages.py --image data/forged/forged_001_clean_translation.png
+```
+
+### D. Run Dataset Generation
 Re-generate the reproducible synthetic benchmark dataset with ground-truth logs:
 ```bash
 python scripts/generate_dataset.py
 ```
 
-### D. Run Benchmark & Evaluation Engines
+### E. Run Benchmark & Evaluation Engines
 Evaluate detection metrics and quantitative parameter errors across all dataset images:
 ```bash
 # Evaluate ORB
