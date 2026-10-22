@@ -31,12 +31,19 @@ def run_full_pipeline(
     ratio: float = 0.75,
     ransac_threshold: float = 3.0,
     ela_quality: int = 95,
-    max_edge: int = 1600
+    max_edge: int = 1600,
+    enhance_clahe: bool = False,
+    clahe_clip_limit: float = 2.0
 ) -> ForensicReport:
     """
     Master function that runs the entire PixelGuard pipeline.
     """
-    preprocess = preprocess_image(image_path, max_edge=max_edge)
+    preprocess = preprocess_image(
+        image_path, 
+        max_edge=max_edge, 
+        enhance_clahe=enhance_clahe, 
+        clahe_clip_limit=clahe_clip_limit
+    )
     copy_move = run_copy_move_analysis(
         preprocess.gray_image,
         preprocess.color_image,
@@ -186,6 +193,17 @@ def main():
     ela_quality = st.sidebar.slider("ELA JPEG Quality Level", 80, 100, 95, 1, help="Quality level for JPEG re-compression.")
     max_edge = st.sidebar.select_slider("Max Image Edge (Resolution Cap)", options=[800, 1200, 1600, 2000], value=1600)
     
+    st.sidebar.subheader("🔬 DIP Enhancements")
+    enhance_clahe = st.sidebar.checkbox(
+        "Enhance Contrast (CLAHE)", 
+        value=False, 
+        help="Contrast Limited Adaptive Histogram Equalization boosts local contrast in shadowy or low-contrast regions."
+    )
+    clahe_clip_limit = (
+        st.sidebar.slider("CLAHE Clip Limit", 1.0, 5.0, 2.0, 0.5, help="Higher = more contrast amplification.")
+        if enhance_clahe else 2.0
+    )
+    
     uploaded_file = st.file_uploader("Upload Smartphone Image...", type=["jpg", "jpeg", "png"])
     
     if uploaded_file is not None:
@@ -205,7 +223,9 @@ def main():
                     ratio=ratio,
                     ransac_threshold=ransac_threshold,
                     ela_quality=ela_quality,
-                    max_edge=max_edge
+                    max_edge=max_edge,
+                    enhance_clahe=enhance_clahe,
+                    clahe_clip_limit=clahe_clip_limit
                 )
                 
             st.success("Analysis Complete!")
@@ -278,9 +298,10 @@ def main():
                     st.markdown("""
                     **DIP Concepts:** Color-to-grayscale intensity conversion via luminance weighting 
                     $Y = 0.299R + 0.587G + 0.114B$, decimation via area interpolation (`cv2.INTER_AREA`), 
-                    and high-frequency noise suppression via 2D Gaussian kernel convolution $G(x,y,\\sigma)$.
+                    high-frequency noise suppression via 2D Gaussian convolution $G(x,y,\\sigma)$, and 
+                    **local adaptive contrast enhancement via CLAHE** (Contrast Limited Adaptive Histogram Equalization).
                     """)
-                    d1_col1, d1_col2, d1_col3 = st.columns(3)
+                    d1_col1, d1_col2, d1_col3, d1_col4 = st.columns(4)
                     with d1_col1:
                         st.image(
                             cv2.cvtColor(report.preprocess.color_image, cv2.COLOR_BGR2RGB),
@@ -302,6 +323,15 @@ def main():
                             )
                         else:
                             st.info("Gaussian smoothing disabled in current run.")
+                    with d1_col4:
+                        if report.preprocess.clahe_image is not None:
+                            st.image(
+                                report.preprocess.clahe_image,
+                                caption="1.4 CLAHE Enhanced (Contextual Hist. Eq.)",
+                                use_container_width=True
+                            )
+                        else:
+                            st.info("CLAHE enhancement disabled.")
 
                     # Grayscale Histogram
                     hist, _ = np.histogram(report.preprocess.gray_image, bins=32, range=(0, 256))
