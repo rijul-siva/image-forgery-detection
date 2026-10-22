@@ -1,23 +1,23 @@
 """
 Localization of forged regions.
 
-We split the verified inlier keypoints into two spatial clusters (since
-copy-move creates exactly two related locations: source and destination).
-A simple greedy "farthest-point" seeding + radius assignment is robust,
-deterministic, and faster than k-means for typical input sizes.
+Source and destination inlier keypoints are grouped independently with
+single-link spatial clustering. This adapts to any number of clone
+locations (k >= 2), rather than assuming exactly one source and one copy.
+Each cluster is turned into a mask:
 
-We then:
   - Draw each cluster into its own binary mask.
   - Run morphological closing + dilation to fill gaps between sparse
     keypoints.
   - Take the largest connected component in each mask as the region.
-  - Compute bounding box, area (px and % of image), and centroid.
+  - Compute bounding box, area (px and % of image), and centroid, in both
+    the resized analysis canvas and the original native resolution.
 
 If only one cluster survives, we still return it (the source region is
 visually meaningful even without a paired cluster).
 
-For convenience, both cluster masks are also combined into a single
-output `mask` for the UI.
+For convenience, all cluster masks are also combined into a single output
+`mask` for the UI.
 """
 from __future__ import annotations
 
@@ -50,13 +50,19 @@ class LocalizationResult:
     image_shape: Tuple[int, int]         # (height, width)
 
 
-def _greedy_two_cluster(points: PointArray, image_shape: Tuple[int, int]) -> np.ndarray:
+def _adaptive_cluster(points: PointArray, image_shape: Tuple[int, int]) -> np.ndarray:
     """
-    Split `points` into at most 2 clusters using farthest-point seeding.
+    Group points with single-link spatial clustering.
 
-    Returns an int32 label array of length N with values in {0, 1}.
-    If a cluster has fewer than 3 points after seeding, it's merged back
-    into the other (or all points are assigned to cluster 0).
+    Unlike a fixed k=2 split, this discovers any number of spatial groups,
+    which is what multi-copy forgery (k > 2 cloned regions) needs. The link
+    threshold scales with the image diagonal so it behaves consistently
+    across resolutions.
+
+    Returns an int32 label array of length N. Labels are >= 0 for clusters
+    that contain at least 3 points; isolated points are labelled -1. If no
+    cluster reaches 3 points, every point is put in cluster 0 so callers
+    still produce a single region.
     """
     n = len(points)
     if n == 0:
@@ -66,60 +72,57 @@ def _greedy_two_cluster(points: PointArray, image_shape: Tuple[int, int]) -> np.
         return np.zeros((n,), dtype=np.int32)
 
     h, w = image_shape[:2]
-    diag = float(np.hypot(w, h))
+    threshold = max(30.0, 0.08 * float(np.hypot(w, h)))
 
-    # Pick the first centroid as the point farthest from image centre
-    # (avoids seeding inside an already-dense unrelated area).
-    cx, cy = w / 2.0, h / 2.0
-    d_from_center = np.linalg.norm(points - np.array([cx, cy]), axis=1)
-    seed0 = int(np.argmax(d_from_center))
+    parent = list(range(n))
 
-    # Pick the second centroid as the point farthest from seed0.
-    d_from_seed0 = np.linalg.norm(points - points[seed0], axis=1)
-    seed1 = int(np.argmax(d_from_seed0))
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
 
-    # Assign each point to its closer seed.
-    d0 = np.linalg.norm(points - points[seed0], axis=1)
-    d1 = np.linalg.norm(points - points[seed1], axis=1)
-    labels = (d1 < d0).astype(np.int32)
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[rj] = ri
 
-    # If one cluster is too small, treat as single-cluster output.
-    counts = np.bincount(labels, minlength=2)
-    if counts.min() < 3:
+    for i in range(n):
+        d = np.linalg.norm(points[i + 1:] - points[i], axis=1)
+        for j in np.flatnonzero(d <= threshold):
+            union(i, i + 1 + int(j))
+
+    roots = [find(i) for i in range(n)]
+    remap: dict = {}
+    labels = np.empty((n,), dtype=np.int32)
+    for i, root in enumerate(roots):
+        if root not in remap:
+            remap[root] = len(remap)
+        labels[i] = remap[root]
+
+    sizes = np.bincount(labels)
+    if sizes.max() < 3:
         return np.zeros((n,), dtype=np.int32)
 
-    # Iteratively refine (3 iterations is plenty for k=2).
-    for _ in range(3):
-        c0 = points[labels == 0].mean(axis=0)
-        c1 = points[labels == 1].mean(axis=0)
-        d0 = np.linalg.norm(points - c0, axis=1)
-        d1 = np.linalg.norm(points - c1, axis=1)
-        new_labels = (d1 < d0).astype(np.int32)
-        if np.array_equal(new_labels, labels):
-            break
-        labels = new_labels
-
-    # Silence "diag unused" lint — kept for documentation / future tuning.
-    _ = diag
+    # Isolated points / tiny groups are noise, not regions.
+    for lbl, size in enumerate(sizes):
+        if size < 3:
+            labels[labels == lbl] = -1
     return labels
 
 
-def _cluster_to_mask(
-    points_src: PointArray,
-    points_dst: PointArray,
+def _points_to_mask(
+    points: PointArray,
     image_shape: Tuple[int, int],
 ) -> np.ndarray:
-    """Combine src+dst points into one binary mask by drawing filled circles."""
+    """Draw filled circles at the given points into a binary mask."""
     h, w = image_shape[:2]
     mask = np.zeros((h, w), dtype=np.uint8)
-    all_pts = np.vstack([points_src, points_dst]) if len(points_src) and len(points_dst) else (
-        points_src if len(points_src) else points_dst
-    )
-    if len(all_pts) == 0:
+    if len(points) == 0:
         return mask
     # Keypoint "size" varies by detector; use a fixed radius scaled to image.
     radius = max(4, int(0.0035 * (w + h) * 0.5))
-    for x, y in all_pts:
+    for x, y in points:
         cv2.circle(mask, (int(round(x)), int(round(y))), radius, 255, thickness=-1)
     return mask
 
@@ -146,8 +149,13 @@ def _refine_mask(mask: np.ndarray) -> np.ndarray:
 def _compute_region_info(
     mask: np.ndarray,
     image_shape: Tuple[int, int],
+    scale_factor: float = 1.0,
 ) -> Optional[RegionInfo]:
-    """Bounding box, area, and centroid of a binary mask."""
+    """Bounding box, area, and centroid of a binary mask.
+
+    Measurements are in resized-canvas pixels. The `*_native` copies are
+    mapped back to the original image with `1 / scale_factor`.
+    """
     if mask is None or mask.size == 0 or mask.max() == 0:
         return None
 
@@ -169,6 +177,9 @@ def _compute_region_info(
         cx = float(x + w / 2.0)
         cy = float(y + h / 2.0)
 
+    # original_px = resized_px / scale_factor
+    inv = 1.0 / scale_factor if scale_factor and scale_factor > 0 else 1.0
+
     return RegionInfo(
         bbox_x=int(x),
         bbox_y=int(y),
@@ -178,6 +189,13 @@ def _compute_region_info(
         area_percent=area_percent,
         centroid_x=cx,
         centroid_y=cy,
+        bbox_x_native=int(round(x * inv)),
+        bbox_y_native=int(round(y * inv)),
+        bbox_width_native=int(round(w * inv)),
+        bbox_height_native=int(round(h * inv)),
+        area_px_native=area_px * inv * inv,
+        centroid_x_native=cx * inv,
+        centroid_y_native=cy * inv,
     )
 
 
@@ -185,65 +203,80 @@ def localize_forgery(
     inlier_src: PointArray,
     inlier_dst: PointArray,
     image_shape: Tuple[int, int],
+    scale_factor: float = 1.0,
 ) -> LocalizationResult:
     """
     Build per-region masks and metrics from verified inlier keypoints.
+
+    Source and destination keypoints are clustered independently, so a
+    simple copy-move yields two regions (source + clone) and a multi-copy
+    forgery yields one region per duplicated location.
 
     Parameters
     ----------
     inlier_src, inlier_dst : np.ndarray
         Each is (N, 2) in (x, y) order, dtype float64.
     image_shape : (height, width)
+    scale_factor : float
+        Preprocessing resize ratio (resized / original). Used to fill the
+        `*_native` region metrics.
 
     Returns
     -------
     LocalizationResult
-        One LocalizedRegion per cluster, and a combined mask covering both.
+        One LocalizedRegion per spatial cluster, plus a combined mask.
     """
     h, w = image_shape[:2]
     combined_mask = np.zeros((h, w), dtype=np.uint8)
 
-    if len(inlier_src) == 0 and len(inlier_dst) == 0:
+    src = np.asarray(inlier_src, dtype=np.float64).reshape(-1, 2)
+    dst = np.asarray(inlier_dst, dtype=np.float64).reshape(-1, 2)
+
+    if len(src) == 0 and len(dst) == 0:
         return LocalizationResult(
             combined_mask=combined_mask, regions=[], image_shape=image_shape
         )
 
-    # We treat every verified point as a point of interest, then cluster by
-    # spatial proximity. Within each cluster we count how many of the
-    # points are "src" vs "dst" — purely for the report (not required by
-    # the dataclass but useful for visualization).
-    all_pts = (
-        np.vstack([inlier_src, inlier_dst])
-        if len(inlier_src) and len(inlier_dst)
-        else (inlier_src if len(inlier_src) else inlier_dst)
-    )
-    labels = _greedy_two_cluster(all_pts, image_shape)
-
-    unique_labels = sorted(set(labels.tolist()))
     regions: List[LocalizedRegion] = []
 
-    for lbl in unique_labels:
-        idxs = np.where(labels == lbl)[0]
-        # Reconstruct src/dst split inside this cluster.
-        n_src = len(inlier_src)
-        cluster_src = all_pts[idxs][idxs < n_src] if n_src else np.empty((0, 2))
-        cluster_dst = all_pts[idxs][idxs >= n_src] if n_src else all_pts[idxs]
-
-        raw_mask = _cluster_to_mask(cluster_src, cluster_dst, image_shape)
+    def add_cluster(
+        points: PointArray,
+        src_points: PointArray,
+        dst_points: PointArray,
+    ) -> None:
+        nonlocal combined_mask
+        raw_mask = _points_to_mask(points, image_shape)
         refined = _refine_mask(raw_mask)
-        info = _compute_region_info(refined, image_shape)
+        info = _compute_region_info(refined, image_shape, scale_factor)
         if info is None:
-            continue
-
+            return
         regions.append(
             LocalizedRegion(
                 mask=refined,
                 info=info,
-                keypoints_src=cluster_src,
-                keypoints_dst=cluster_dst,
+                keypoints_src=src_points,
+                keypoints_dst=dst_points,
             )
         )
         combined_mask = cv2.bitwise_or(combined_mask, refined)
+
+    # Source-side regions.
+    if len(src):
+        src_labels = _adaptive_cluster(src, image_shape)
+        for lbl in sorted(set(src_labels.tolist())):
+            if lbl < 0:
+                continue
+            pts = src[src_labels == lbl]
+            add_cluster(pts, pts, np.empty((0, 2)))
+
+    # Destination-side regions.
+    if len(dst):
+        dst_labels = _adaptive_cluster(dst, image_shape)
+        for lbl in sorted(set(dst_labels.tolist())):
+            if lbl < 0:
+                continue
+            pts = dst[dst_labels == lbl]
+            add_cluster(pts, np.empty((0, 2)), pts)
 
     # Sort regions by area, largest first — easier for the UI.
     regions.sort(key=lambda r: r.info.area_px, reverse=True)

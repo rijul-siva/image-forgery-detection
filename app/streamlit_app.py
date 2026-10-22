@@ -11,6 +11,20 @@ from src.forensics.ela import run_ela_analysis
 from src.forensics.metadata import run_metadata_analysis
 from src.utils.data_types import ForensicReport
 
+ALLOWED_UPLOAD_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+
+
+def safe_upload_suffix(filename: str) -> str:
+    """Return a decoder-safe temporary-file suffix for an uploaded file.
+
+    Preserving the original extension matters: writing a PNG to a `.jpg`
+    temp file makes OpenCV/Pillow misread the container, which corrupts
+    metadata parsing and the ELA recompression baseline.
+    """
+    ext = os.path.splitext(filename or "")[1].lower()
+    return ext if ext in ALLOWED_UPLOAD_EXTENSIONS else ".jpg"
+
+
 def run_full_pipeline(
     image_path: str, 
     detector: str = "orb",
@@ -28,9 +42,15 @@ def run_full_pipeline(
         preprocess.color_image,
         detector=detector,
         ratio=ratio,
-        ransac_threshold=ransac_threshold
+        ransac_threshold=ransac_threshold,
+        preprocess_scale=preprocess.scale_factor,
     )
-    ela = run_ela_analysis(image_path, quality=ela_quality)
+    # ELA is scored statistically inside the detected copy-move regions.
+    ela = run_ela_analysis(
+        image_path,
+        quality=ela_quality,
+        region_mask=copy_move.mask,
+    )
     metadata = run_metadata_analysis(image_path)
     
     return ForensicReport(
@@ -44,7 +64,8 @@ def report_to_dict(report: ForensicReport) -> dict:
     """Convert ForensicReport to a serializable dictionary for JSON export."""
     cm = report.copy_move
     tp = cm.transform_params
-    
+    sf = report.preprocess.scale_factor or 1.0
+
     tp_dict = None
     if tp is not None:
         tp_dict = {
@@ -52,16 +73,32 @@ def report_to_dict(report: ForensicReport) -> dict:
             "scale_factor": round(float(tp.scale_factor), 3),
             "translation_x": round(float(tp.translation_x), 1),
             "translation_y": round(float(tp.translation_y), 1),
-            "translation_distance": round(float(tp.translation_distance), 1)
+            "translation_distance": round(float(tp.translation_distance), 1),
+            # Native photo pixels = analysis pixels / scale_factor.
+            "translation_x_native": round(float(tp.translation_x) / sf, 1),
+            "translation_y_native": round(float(tp.translation_y) / sf, 1),
+            "translation_distance_native": round(float(tp.translation_distance) / sf, 1),
         }
-        
+
     regions_list = []
     for r in cm.regions:
         regions_list.append({
             "bbox": [r.bbox_x, r.bbox_y, r.bbox_width, r.bbox_height],
             "area_px": round(float(r.area_px), 1),
             "area_percent": round(float(r.area_percent), 2),
-            "centroid": [round(float(r.centroid_x), 1), round(float(r.centroid_y), 1)]
+            "centroid": [round(float(r.centroid_x), 1), round(float(r.centroid_y), 1)],
+            "bbox_native": [
+                r.bbox_x_native, r.bbox_y_native,
+                r.bbox_width_native, r.bbox_height_native,
+            ],
+            "area_px_native": (
+                round(float(r.area_px_native), 1)
+                if r.area_px_native is not None else None
+            ),
+            "centroid_native": [
+                round(float(r.centroid_x_native), 1) if r.centroid_x_native is not None else None,
+                round(float(r.centroid_y_native), 1) if r.centroid_y_native is not None else None,
+            ],
         })
         
     return {
@@ -150,7 +187,11 @@ def main():
     uploaded_file = st.file_uploader("Upload Smartphone Image...", type=["jpg", "jpeg", "png"])
     
     if uploaded_file is not None:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
+        # Preserve the uploaded extension so OpenCV / Pillow decode the file
+        # with the correct format.
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=safe_upload_suffix(uploaded_file.name)
+        ) as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             tmp_file_path = tmp_file.name
             
@@ -181,6 +222,12 @@ def main():
             m3.metric("Rotation Angle", f"{cm.transform_params.rotation_degrees:.1f}°" if cm.transform_params else "N/A")
             m4.metric("Scale Factor", f"{cm.transform_params.scale_factor:.2f}×" if cm.transform_params else "N/A")
             m5.metric("Trans. Distance", f"{cm.transform_params.translation_distance:.1f} px" if cm.transform_params else "N/A")
+            if cm.transform_params and report.preprocess.scale_factor != 1.0:
+                st.caption(
+                    f"Native photo coordinates: duplicated content moved "
+                    f"{cm.transform_params.translation_distance / report.preprocess.scale_factor:.1f} px "
+                    f"(scale factor {report.preprocess.scale_factor:.2f}×)."
+                )
             
             st.divider()
             
@@ -245,13 +292,20 @@ def main():
                     st.subheader("📐 Estimated Transformation Parameters")
                     if cm.transform_params is not None:
                         tp = cm.transform_params
+                        sf = report.preprocess.scale_factor or 1.0
                         st.table([
                             {"Parameter": "Rotation Angle (θ)", "Value": f"{tp.rotation_degrees:.2f}°"},
                             {"Parameter": "Scale Factor (s)", "Value": f"{tp.scale_factor:.3f}×"},
                             {"Parameter": "Translation X (dx)", "Value": f"{tp.translation_x:.1f} px"},
                             {"Parameter": "Translation Y (dy)", "Value": f"{tp.translation_y:.1f} px"},
-                            {"Parameter": "Euclidean Translation Dist", "Value": f"{tp.translation_distance:.1f} px"}
+                            {"Parameter": "Euclidean Translation Dist", "Value": f"{tp.translation_distance:.1f} px"},
+                            {"Parameter": "Translation Dist (native photo)", "Value": f"{tp.translation_distance / sf:.1f} px"},
                         ])
+                        if sf != 1.0:
+                            st.caption(
+                                f"Analysis canvas is {sf:.2f}× the original; native values are "
+                                "divided by the preprocessing scale factor."
+                            )
                     else:
                         st.info("No consensus transform found by RANSAC.")
                         
@@ -265,7 +319,15 @@ def main():
                                 "Bounding Box": f"{reg.bbox_width} × {reg.bbox_height} px",
                                 "Area (px²)": f"{reg.area_px:.0f}",
                                 "Image Area %": f"{reg.area_percent:.2f}%",
-                                "Centroid (x,y)": f"({reg.centroid_x:.0f}, {reg.centroid_y:.0f})"
+                                "Centroid (x,y)": f"({reg.centroid_x:.0f}, {reg.centroid_y:.0f})",
+                                "Native BBox": (
+                                    f"{reg.bbox_width_native} × {reg.bbox_height_native} px"
+                                    if reg.bbox_width_native is not None else "—"
+                                ),
+                                "Native Centroid": (
+                                    f"({reg.centroid_x_native:.0f}, {reg.centroid_y_native:.0f})"
+                                    if reg.centroid_x_native is not None else "—"
+                                ),
                             })
                         st.table(reg_rows)
                     else:
@@ -283,7 +345,7 @@ def main():
                     st.markdown("### ELA Summary")
                     st.markdown(f"**Suspicion Level:** `{report.ela.suspicion_level.upper()}`")
                     st.info(report.ela.description)
-                    st.caption("Note: ELA signals are supplementary indicators and can be influenced by global resizing, noise, or high-frequency textures.")
+                    st.caption("Suspicion is scored statistically: when copy-move regions were found, the error inside those regions is compared with the background (in background-σ units); otherwise a localized block z-score is used. Sharp natural edges are no longer flagged by a raw global maximum.")
 
             with tab4:
                 st.subheader("EXIF Metadata Inspection")

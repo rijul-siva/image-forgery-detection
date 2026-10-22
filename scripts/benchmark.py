@@ -79,29 +79,41 @@ def run_benchmark():
         "| :--- | :--- | :--- | :--- |",
     ]
 
+    orb_fp = orb_summary['confusion_matrix']['false_positives']
+    sift_fp = sift_summary['confusion_matrix']['false_positives']
+    orb_acc = orb_summary['classification_metrics']['accuracy'] * 100
+    sift_acc = sift_summary['classification_metrics']['accuracy'] * 100
+    orb_scale = orb_summary['parameter_estimation_accuracy']['mean_scale_error_pct']
+    sift_scale = sift_summary['parameter_estimation_accuracy']['mean_scale_error_pct']
+    orb_theta = orb_summary['parameter_estimation_accuracy']['mean_theta_error_deg']
+    sift_theta = sift_summary['parameter_estimation_accuracy']['mean_theta_error_deg']
+    orb_lat = orb_summary['performance']['mean_latency_ms']
+    sift_lat = sift_summary['performance']['mean_latency_ms']
+
     for m, o, s in metrics:
         analysis = ""
         if "Latency" in m:
-            analysis = "SIFT is faster here due to selective DoG keypoints and FLANN KD-tree search"
+            faster = "SIFT" if sift_lat < orb_lat else "ORB"
+            analysis = f"{faster} was faster on this dataset ({sift_lat} ms vs {orb_lat} ms)"
         elif "Recall" in m:
-            analysis = "Both achieve 100% recall on genuine forgeries"
+            analysis = "Share of forged images correctly detected"
         elif "False Positives" in m:
-            analysis = "ORB triggered 2 FPs on repetitive textures; SIFT achieved 0 FPs"
+            analysis = f"ORB: {orb_fp}, SIFT: {sift_fp}"
         elif "Rotation" in m:
-            analysis = "Both achieve sub-degree rotational accuracy"
+            analysis = f"SIFT {sift_theta}° vs ORB {orb_theta}°"
         elif "Scale" in m:
-            analysis = "SIFT offers tighter scale estimation (3.12% vs 5.21%)"
+            analysis = f"SIFT {sift_scale}% vs ORB {orb_scale}%"
         elif "Precision" in m:
-            analysis = "SIFT 100% precision vs ORB 80% due to repetitive texture handling"
+            analysis = f"Accuracy ORB {orb_acc:.1f}% vs SIFT {sift_acc:.1f}%"
         md_lines.append(f"| **{m}** | {o} | {s} | {analysis} |")
 
     md_lines.extend([
         "",
         "## 2. Key Findings & Engineering Tradeoffs",
         "",
-        "1. **Detection Accuracy & Texture Discrimination:** SIFT achieved 100% accuracy and 0 false positives on the negative test set, successfully rejecting repetitive architectural window lattices and brick walls. ORB produced 2 false alarms because binary intensity comparisons are prone to accidental consensus on regular grids.",
-        "2. **Rotational & Scale Stability:** SIFT Difference-of-Gaussians scale-space yielded slightly lower parameter error margins (0.03° vs 0.11° in rotation, 3.12% vs 5.21% in scale).",
-        "3. **Computational Latency:** While ORB's binary descriptor extraction is theoretically faster per pixel, SIFT with FLANN KD-tree matching converged faster on these benchmark images (69 ms vs 158 ms) because SIFT extracted fewer, more distinctive keypoints than ORB's 5000-point ceiling.",
+        f"1. **Detection Accuracy & Texture Discrimination:** SIFT reached {sift_acc:.1f}% accuracy with {sift_fp} false positives on the negative set, while ORB reached {orb_acc:.1f}% with {orb_fp}. Repeated architectural textures (windows, bricks) share one dominant displacement, which the lattice-suppression filter removes before RANSAC; residual differences reflect descriptor discriminability.",
+        f"2. **Rotational & Scale Stability:** Mean rotation error was {sift_theta}° (SIFT) vs {orb_theta}° (ORB); mean scale error {sift_scale}% vs {orb_scale}%.",
+        f"3. **Computational Latency:** Mean end-to-end pipeline latency was {sift_lat} ms (SIFT) vs {orb_lat} ms (ORB) on the benchmark images.",
         "",
     ])
 

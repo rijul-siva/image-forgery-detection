@@ -115,7 +115,16 @@ def match_features(
     #     We drop the self-match but ALWAYS compare against the next-best
     #     neighbour (the real candidate), not against the self-match.
     #   - Apply Lowe's ratio test against the next-best neighbour.
+    #
+    # Symmetric deduplication: because the descriptors are matched against
+    # themselves, the pair (A, B) is also discovered in reverse as (B, A).
+    # The two directions describe *inverse* transforms, so feeding both to
+    # RANSAC makes it fit one direction and reject the other half as
+    # outliers (halving the inlier ratio and flipping the rotation sign).
+    # We therefore keep each unordered pair exactly once, oriented by
+    # index (queryIdx < trainIdx).
     pairs: List[MatchPair] = []
+    seen_pairs: set = set()
     kps = features.keypoints
     for nn in raw:
         if len(nn) < 2:
@@ -134,16 +143,23 @@ def match_features(
         # Lowe's ratio test.
         if m.distance >= ratio * n.distance:
             continue
+        # Canonical orientation + symmetric deduplication.
+        q_idx, t_idx = int(m.queryIdx), int(m.trainIdx)
+        if q_idx > t_idx:
+            q_idx, t_idx = t_idx, q_idx
+        if (q_idx, t_idx) in seen_pairs:
+            continue
         # Spatial suppression.
-        a = kps[m.queryIdx].pt
-        b = kps[m.trainIdx].pt
+        a = kps[q_idx].pt
+        b = kps[t_idx].pt
         spatial = float(np.hypot(a[0] - b[0], a[1] - b[1]))
         if spatial < spatial_distance_min:
             continue
+        seen_pairs.add((q_idx, t_idx))
         pairs.append(
             MatchPair(
-                src_idx=m.queryIdx,
-                dst_idx=m.trainIdx,
+                src_idx=q_idx,
+                dst_idx=t_idx,
                 src_xy=a,
                 dst_xy=b,
                 distance=float(m.distance),
@@ -151,3 +167,85 @@ def match_features(
         )
 
     return pairs
+
+
+# ---- Repetitive-pattern / lattice suppression ----------------------------
+
+def suppress_repetitive_patterns(
+    matches: List[MatchPair],
+    image_shape: Optional[Tuple[int, int]] = None,
+    min_matches: int = 12,
+    displacement_tol: float = 2.0,
+    dominance: float = 0.75,
+    scatter_frac: float = 0.6,
+) -> List[MatchPair]:
+    """
+    Discard matches that are explained by a periodic (lattice) texture.
+
+    Naturally repeated structures (brick walls, window grids, tiled
+    pavement) produce many matches sharing one translation vector, just
+    like a pure-translation copy-move. They differ in one respect: the
+    source keypoints are scattered across the whole image, whereas a
+    copied region's keypoints occupy one localized area (or one area per
+    clone for multi-copy forgeries).
+
+    Heuristic:
+      1. Find the dominant displacement vector (the largest group of
+         matches whose (dx, dy) agree within `displacement_tol`).
+      2. Only act if that group is at least `dominance` of all matches
+         (the image is dominated by a single repeated offset).
+      3. Measure how widely the group's source points are spread. If they
+         cover at least `scatter_frac` of the image in BOTH axes, the
+         content is periodic — drop the group.
+
+    Returns a filtered list of matches; the input list is not modified.
+    """
+    if len(matches) < min_matches:
+        return list(matches)
+
+    disp = np.array(
+        [
+            [m.dst_xy[0] - m.src_xy[0], m.dst_xy[1] - m.src_xy[1]]
+            for m in matches
+        ],
+        dtype=np.float64,
+    )
+    src = np.array([m.src_xy for m in matches], dtype=np.float64)
+
+    # Dominant displacement: pick the vector with the most neighbours.
+    counts = np.array(
+        [
+            int(np.count_nonzero(np.linalg.norm(disp - d, axis=1) <= displacement_tol))
+            for d in disp
+        ]
+    )
+    best = int(np.argmax(counts))
+    if counts[best] < min_matches:
+        return list(matches)
+    dominant_idx = np.flatnonzero(
+        np.linalg.norm(disp - disp[best], axis=1) <= displacement_tol
+    )
+    if len(dominant_idx) / len(matches) < dominance:
+        return list(matches)
+
+    # How scattered are the sources of that repeated offset?
+    pts = src[dominant_idx]
+    if image_shape is not None:
+        h, w = image_shape[:2]
+    else:
+        # Fall back to the points' own extent.
+        span = np.ptp(pts, axis=0)
+        h, w = max(float(span[1]), 1.0), max(float(span[0]), 1.0)
+
+    x_lo, x_hi = np.percentile(pts[:, 0], [5, 95])
+    y_lo, y_hi = np.percentile(pts[:, 1], [5, 95])
+    spread_x = float(x_hi - x_lo) / float(w)
+    spread_y = float(y_hi - y_lo) / float(h)
+
+    if spread_x < scatter_frac or spread_y < scatter_frac:
+        # Sources occupy a localized area — consistent with a copy-move.
+        return list(matches)
+
+    # Periodic structure: drop the dominant translation group.
+    drop = set(int(i) for i in dominant_idx)
+    return [m for i, m in enumerate(matches) if i not in drop]

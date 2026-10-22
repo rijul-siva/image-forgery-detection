@@ -31,7 +31,13 @@ class TransformParams:
 
 @dataclass
 class RegionInfo:
-    """Metrics for one suspicious region."""
+    """Metrics for one suspicious region.
+
+    The primary fields are measured on the resized analysis canvas. The
+    `*_native` fields are the same measurements mapped back to the original
+    smartphone-photo resolution (requires `scale_factor` from preprocessing;
+    they fall back to the resized values when it is 1.0).
+    """
     bbox_x: int
     bbox_y: int
     bbox_width: int
@@ -40,6 +46,13 @@ class RegionInfo:
     area_percent: float              # Area as % of total image area
     centroid_x: float
     centroid_y: float
+    bbox_x_native: Optional[int] = None
+    bbox_y_native: Optional[int] = None
+    bbox_width_native: Optional[int] = None
+    bbox_height_native: Optional[int] = None
+    area_px_native: Optional[float] = None
+    centroid_x_native: Optional[float] = None
+    centroid_y_native: Optional[float] = None
 
 
 @dataclass

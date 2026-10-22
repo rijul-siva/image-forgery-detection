@@ -8,12 +8,13 @@ Usage (from the orchestrator / Streamlit app):
     # result is a `CopyMoveResult` matching the contract in data_types.py.
 
 Stages (matches `zed.md` §5, Steps 4-11):
-  1. extract_features()       (Step 4)
-  2. match_features()         (Step 5, 6)
-  3. verify_geometric()       (Step 7)
-  4. decompose_affine()       (Step 8)
-  5. localize_forgery()       (Step 9, 10, 11)
-  6. Visualization overlays   (used by the UI as well)
+  1. extract_features()              (Step 4)
+  2. match_features()                (Step 5, 6.1-6.3)
+  3. suppress_repetitive_patterns()  (Step 6.4)
+  4. verify_geometric()              (Step 7)
+  5. decompose_affine()              (Step 8)
+  6. localize_forgery()              (Step 9, 10, 11)
+  7. Visualization overlays          (used by the UI as well)
 
 If any stage fails (too few features, RANSAC no consensus, etc.) we
 return a `CopyMoveResult(forgery_detected=False, ...)` rather than raising,
@@ -32,10 +33,10 @@ from src.utils.data_types import (
 )
 
 from .feature_extraction import extract_features
-from .feature_matching import match_features
+from .feature_matching import match_features, suppress_repetitive_patterns
 from .geometric_verification import verify_geometric
-from .localization import centroid_distance, localize_forgery
-from .parameters import decompose_affine
+from .localization import localize_forgery
+from .parameters import decompose_affine, physical_translation
 from .visualization import draw_matches, draw_regions, draw_transformation_arrow
 
 
@@ -50,6 +51,7 @@ DEFAULTS = {
     "confidence": 0.995,
     "forgery_min_inliers": 8,
     "forgery_min_inlier_ratio": 0.08,
+    "suppress_repetitive": True,
 }
 
 
@@ -85,6 +87,8 @@ def run_copy_move_analysis(
     confidence: float = DEFAULTS["confidence"],
     forgery_min_inliers: int = DEFAULTS["forgery_min_inliers"],
     forgery_min_inlier_ratio: float = DEFAULTS["forgery_min_inlier_ratio"],
+    suppress_repetitive: bool = DEFAULTS["suppress_repetitive"],
+    preprocess_scale: float = 1.0,
 ) -> CopyMoveResult:
     """
     Run the full copy-move detection pipeline on preprocessed images.
@@ -96,6 +100,10 @@ def run_copy_move_analysis(
     color_image : np.ndarray
         BGR color version (from `PreprocessResult.color_image`), used for
         visualizations. Not modified.
+    preprocess_scale : float
+        The preprocessing resize ratio (`PreprocessResult.scale_factor`),
+        used to report region metrics in native photo coordinates. Defaults
+        to 1.0 (analysis coordinates == native coordinates).
 
     Returns
     -------
@@ -122,6 +130,10 @@ def run_copy_move_analysis(
         ratio=ratio,
         spatial_distance_min=spatial_distance_min,
     )
+    if suppress_repetitive:
+        # Drop matches explained by a periodic texture (bricks, windows,
+        # tiles) before RANSAC can lock onto the lattice.
+        matches = suppress_repetitive_patterns(matches, image_shape=image_shape)
     num_total_matches = len(matches)
     if num_total_matches == 0:
         return _empty_result(color_image)
@@ -158,6 +170,20 @@ def run_copy_move_analysis(
     # --- Step 8: affine decomposition ------------------------------------
     transform_params: Optional[TransformParams] = decompose_affine(geom.affine_matrix)
 
+    # The matrix's translation column is origin-dependent under rotation /
+    # scale. Report the physical, centroid-to-centroid paste displacement
+    # instead, which is what the user actually wants to know.
+    physical = physical_translation(geom.inlier_src, geom.inlier_dst)
+    if transform_params is not None and physical is not None:
+        tx, ty, dist = physical
+        transform_params = TransformParams(
+            rotation_degrees=transform_params.rotation_degrees,
+            scale_factor=transform_params.scale_factor,
+            translation_x=tx,
+            translation_y=ty,
+            translation_distance=dist,
+        )
+
     # Decide "forgery_detected". Two thresholds both must pass:
     #   (a) at least `forgery_min_inliers` RANSAC inliers
     #   (b) inlier/total ratio at least `forgery_min_inlier_ratio`
@@ -172,7 +198,12 @@ def run_copy_move_analysis(
     confidence_score = float(inlier_ratio)
 
     # --- Steps 9-11: localization & region metrics -----------------------
-    loc = localize_forgery(geom.inlier_src, geom.inlier_dst, image_shape)
+    loc = localize_forgery(
+        geom.inlier_src,
+        geom.inlier_dst,
+        image_shape,
+        scale_factor=preprocess_scale,
+    )
     region_infos: list[RegionInfo] = [r.info for r in loc.regions]
     region_vis = draw_regions(color_image, loc.regions)
     if len(loc.regions) >= 2:

@@ -88,3 +88,26 @@ def test_preprocess_corrupt_file():
     finally:
         if os.path.exists(path):
             os.remove(path)
+
+
+def test_preprocess_normalises_exif_orientation():
+    """EXIF orientation tag 6 (rotate 90° CW) must be applied on load."""
+    from PIL import Image
+
+    image = Image.new("RGB", (200, 100), color="white")
+    exif = image.getexif()
+    exif[0x0112] = 6  # Orientation: rotate 90 degrees clockwise
+
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        image.save(tmp.name, exif=exif)
+        path = tmp.name
+
+    try:
+        res = preprocess_image(path, max_edge=1600)
+        # Stored landscape 200x100, displayed portrait 100x200.
+        assert res.original_width == 100
+        assert res.original_height == 200
+        assert res.color_image.shape[:2] == (200, 100)
+    finally:
+        if os.path.exists(path):
+            os.remove(path)

@@ -105,7 +105,7 @@ PixelGuard is a modular image-forensics system built with Python and OpenCV. It 
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/your-username/image-forgery-detection.git
+   git clone https://github.com/rijul-siva/image-forgery-detection.git
    cd image-forgery-detection
    ```
 
@@ -141,7 +141,7 @@ streamlit run app/streamlit_app.py
 - Export findings as structured JSON.
 
 ### B. Run the Automated Test Suite (Pytest)
-Execute all 32 unit and integration tests:
+Execute the unit and integration tests:
 ```bash
 pytest -v
 ```
@@ -188,3 +188,7 @@ Evaluated across the 11-image benchmark dataset (8 positive copy-move scenarios,
 - [`docs/experiments.md`](docs/experiments.md): Comprehensive test results, parameter comparison tables, and benchmark data.
 - [`docs/limitations.md`](docs/limitations.md): Detailed analysis of algorithmic blind spots (smooth inpainting, perspective distortion, repetitive patterns).
 - [`PixelGuard_Final_Plan.md`](PixelGuard_Final_Plan.md): Master team specification and course plan.
+
+## 8. License
+
+Released under the MIT License — see [`LICENSE`](LICENSE).

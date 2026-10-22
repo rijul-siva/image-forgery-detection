@@ -9,9 +9,17 @@ import cv2
 import pytest
 
 from src.copy_move.feature_extraction import extract_features, FeatureSet
-from src.copy_move.feature_matching import match_features, MatchPair
+from src.copy_move.feature_matching import (
+    match_features,
+    suppress_repetitive_patterns,
+    MatchPair,
+)
 from src.copy_move.geometric_verification import verify_geometric, GeometricResult
-from src.copy_move.parameters import decompose_affine, reconstruct_affine
+from src.copy_move.parameters import (
+    decompose_affine,
+    reconstruct_affine,
+    physical_translation,
+)
 from src.copy_move.localization import localize_forgery
 from src.copy_move.pipeline import run_copy_move_analysis
 from src.utils.data_types import TransformParams, CopyMoveResult
@@ -101,6 +109,58 @@ def test_match_features_insufficient_descriptors():
     features = FeatureSet(keypoints=[], descriptors=np.zeros((2, 32), dtype=np.uint8), detector_name="orb")
     matches = match_features(features)
     assert matches == []
+
+
+def test_match_features_canonical_ordering():
+    """Every unordered correspondence must appear exactly once, with src_idx < dst_idx."""
+    canvas = np.full((600, 800), 120, dtype=np.uint8)
+    rng = np.random.default_rng(77)
+    patch = np.full((120, 120), 220, dtype=np.uint8)
+    for _ in range(25):
+        cx, cy = int(rng.integers(10, 110)), int(rng.integers(10, 110))
+        cv2.circle(patch, (cx, cy), int(rng.integers(4, 10)), int(rng.integers(10, 200)), -1)
+    canvas[100:220, 100:220] = patch
+    canvas[350:470, 500:620] = patch
+
+    features = extract_features(canvas, detector="orb")
+    matches = match_features(features, ratio=0.8, spatial_distance_min=10.0)
+
+    assert len(matches) > 0
+    seen = set()
+    for m in matches:
+        assert m.src_idx < m.dst_idx
+        key = (m.src_idx, m.dst_idx)
+        assert key not in seen
+        seen.add(key)
+
+
+def test_suppress_repetitive_patterns_keeps_localized_copy_move():
+    """A copied object's source keypoints are localized, so matches survive."""
+    matches = []
+    for i in range(25):
+        x = 100.0 + (i % 5) * 10.0
+        y = 100.0 + (i // 5) * 10.0
+        matches.append(MatchPair(
+            src_idx=i, dst_idx=100 + i,
+            src_xy=(x, y), dst_xy=(x + 300.0, y + 150.0), distance=10.0,
+        ))
+    out = suppress_repetitive_patterns(matches, image_shape=(600, 800))
+    assert len(out) == len(matches)
+
+
+def test_suppress_repetitive_patterns_drops_lattice():
+    """Identical offsets with sources scattered across the image are periodic texture."""
+    matches = []
+    for row in range(4):
+        for col in range(6):
+            x = 50.0 + col * 130.0
+            y = 50.0 + row * 130.0
+            matches.append(MatchPair(
+                src_idx=len(matches), dst_idx=1000 + len(matches),
+                src_xy=(x, y), dst_xy=(x + 180.0, y + 40.0), distance=10.0,
+            ))
+    out = suppress_repetitive_patterns(matches, image_shape=(600, 800))
+    assert out == []
 
 
 # ---- 3. Geometric Verification (RANSAC) Tests ----
@@ -201,6 +261,32 @@ def test_decompose_affine_edge_cases():
         decompose_affine(np.zeros((3, 3)))
 
 
+def test_physical_translation_is_origin_independent():
+    """Physical paste displacement must not depend on the rotation origin."""
+    theta = math.radians(30.0)
+    s = 1.1
+    offset = np.array([150.0, -60.0])
+    center = np.array([240.0, 180.0])  # arbitrary rotation origin
+
+    rng = np.random.default_rng(5)
+    src = np.column_stack([
+        rng.uniform(50, 400, size=40),
+        rng.uniform(50, 350, size=40),
+    ])
+    rot_scale = s * np.array([
+        [math.cos(theta), -math.sin(theta)],
+        [math.sin(theta),  math.cos(theta)],
+    ])
+    dst = (src - center) @ rot_scale.T + center + offset
+
+    tx, ty, dist = physical_translation(src, dst)
+    assert tx == pytest.approx(offset[0], abs=1e-6)
+    assert ty == pytest.approx(offset[1], abs=1e-6)
+    assert dist == pytest.approx(math.hypot(*offset), abs=1e-6)
+
+    assert physical_translation(np.empty((0, 2)), np.empty((0, 2))) is None
+
+
 # ---- 5. Localization Tests ----
 
 def test_localization_two_clusters():
@@ -219,6 +305,44 @@ def test_localization_two_clusters():
         assert r.info.bbox_height > 0
         assert 0 <= r.info.centroid_x <= 800
         assert 0 <= r.info.centroid_y <= 600
+
+
+def test_localization_multi_copy_clusters():
+    """Multi-copy forgeries produce more than two regions."""
+    rng = np.random.default_rng(11)
+    centers_src = [(100, 100), (500, 100), (900, 100)]
+    centers_dst = [(100, 600), (500, 600), (900, 600)]
+
+    def make_points(centers):
+        return np.array([
+            (cx + rng.uniform(-10, 10), cy + rng.uniform(-10, 10))
+            for cx, cy in centers
+            for _ in range(6)
+        ])
+
+    loc = localize_forgery(
+        make_points(centers_src),
+        make_points(centers_dst),
+        image_shape=(1000, 1000),
+    )
+    assert len(loc.regions) == 6
+
+
+def test_localization_native_coordinates():
+    """Native metrics map back to original resolution via 1 / scale_factor."""
+    src = np.array([[100 + i, 100 + i] for i in range(10)], dtype=float)
+    dst = np.array([[400 + i, 300 + i] for i in range(10)], dtype=float)
+    scale = 0.5  # analysis canvas is half the original size
+
+    loc = localize_forgery(src, dst, image_shape=(600, 800), scale_factor=scale)
+    assert len(loc.regions) >= 1
+    for r in loc.regions:
+        info = r.info
+        assert info.bbox_x_native == pytest.approx(info.bbox_x * 2, abs=1)
+        assert info.bbox_width_native == pytest.approx(info.bbox_width * 2, abs=1)
+        assert info.area_px_native == pytest.approx(info.area_px * 4, rel=1e-6)
+        assert info.centroid_x_native == pytest.approx(info.centroid_x * 2, rel=1e-6)
+        assert info.centroid_y_native == pytest.approx(info.centroid_y * 2, rel=1e-6)
 
 
 # ---- 6. End-to-End Copy-Move Pipeline Tests ----

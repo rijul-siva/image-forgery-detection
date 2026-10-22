@@ -57,6 +57,17 @@ def test_ela_analysis_png(temp_png_image):
     res = run_ela_analysis(temp_png_image, quality=90, amplification=15)
     assert isinstance(res, ELAResult)
     assert res.ela_image.shape == (200, 200, 3)
+    assert "Lossless input" in res.description
+
+
+def test_ela_analysis_uses_region_statistics(temp_jpeg_image):
+    """A sufficiently large region mask switches to region-vs-background scoring."""
+    mask = np.zeros((300, 400), dtype=np.uint8)
+    mask[50:150, 100:200] = 255
+
+    res = run_ela_analysis(temp_jpeg_image, quality=95, region_mask=mask)
+    assert res.suspicion_level in ["low", "medium", "high"]
+    assert "Region-vs-background" in res.description
 
 
 def test_ela_analysis_invalid_path():

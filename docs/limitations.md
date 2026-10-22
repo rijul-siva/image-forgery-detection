@@ -31,8 +31,9 @@ PixelGuard is an experimental **forensic decision-support system**. It identifie
 
 ### 2.3 Naturally Repetitive Architectural Textures (False Positives)
 - **The Issue:** Authentic photographs of building facades, apartment balconies, brick masonry, tiled walkways, and fence pickets contain identical physical features at regular spatial intervals.
-- **Empirical Demonstration:** In our benchmark evaluation, the binary FAST detector in ORB identified identical feature clusters across repetitive window grids and brick patterns, yielding a false positive detection ($s = 1.0, \theta = 0^\circ$).
-- **Remediation:** Repetitive lattice suppression via spatial periodicity filtering, collinear match pruning, or utilizing SIFT's more discriminative 128-D orientation histograms.
+- **Empirical Demonstration:** In our original benchmark, the binary FAST detector in ORB identified identical feature clusters across repetitive window grids and brick patterns, yielding false positives ($s = 1.0, \theta = 0^\circ$).
+- **Implemented Mitigation:** Matches are now filtered before RANSAC: when one displacement dominates the match set (≥ 75%) and its source keypoints are scattered across at least 60% of both image axes, the group is treated as periodic texture and discarded.
+- **Residual Risk:** The filter can miss repeats whose offsets vary (e.g., a hand-drawn irregular brick pattern) and can over-suppress a genuine clone whose source region genuinely spans most of the frame. SIFT remains more discriminative than ORB on such scenes.
 
 ---
 
@@ -53,7 +54,7 @@ PixelGuard is an experimental **forensic decision-support system**. It identifie
 ### 3.1 Sharp Contrast Edge Artifacts
 - In lossy JPEG compression, Discrete Cosine Transform (DCT) $8 \times 8$ blocks quantize high-frequency components aggressively.
 - High-contrast natural boundaries (e.g., dark tree branches against an overexposed sky, sharp building silhouettes, black text on white paper) naturally produce elevated reconstruction errors.
-- **Naive thresholding (`max > 200`) will falsely flag almost 100% of authentic smartphone photos.** ELA must be interpreted as relative error variance, not standalone proof.
+- **Naive global thresholding (`max > 200`) would falsely flag almost 100% of authentic smartphone photos.** PixelGuard therefore scores statistically: region-vs-background $z$-scores when copy-move regions exist, and a localized block $z$-score otherwise. Residual false signals are still possible when a high-frequency natural texture happens to sit inside a detected region.
 
 ### 3.2 Format & Recompression Fragility
 - Lossless formats (PNG, BMP, TIFF) exhibit uniform baseline errors when re-compressed to JPEG, obscuring historical compression discrepancies.

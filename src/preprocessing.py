@@ -7,6 +7,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from src.utils.data_types import PreprocessResult
+from src.utils.image_io import load_image_bgr
 
 def preprocess_image(
     image_path: str, 
@@ -31,10 +32,8 @@ def preprocess_image(
     PreprocessResult
         Dataclass containing color_image, gray_image, scale_factor, and original dimensions.
     """
-    # Load image
-    image = cv2.imread(image_path)
-    if image is None:
-        raise ValueError(f"Could not load image at path: {image_path}")
+    # Load image (EXIF orientation is normalised by the shared loader).
+    image = load_image_bgr(image_path)
 
     # Validate dimensions
     original_height, original_width = image.shape[:2]

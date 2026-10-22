@@ -21,7 +21,7 @@ So:
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -81,3 +81,36 @@ def reconstruct_affine(params: TransformParams) -> np.ndarray:
         dtype=np.float64,
     )
     return M
+
+
+def physical_translation(
+    inlier_src: np.ndarray,
+    inlier_dst: np.ndarray,
+) -> Optional[Tuple[float, float, float]]:
+    """
+    Centroid-to-centroid displacement of the verified correspondences.
+
+    The translation column of the affine matrix is the shift of the image
+    origin under the transform. When the copy is rotated and/or scaled, that
+    column depends on where the origin happens to sit, so it does NOT equal
+    the distance the pasted content actually moved. The mean of
+    (dst - src) over corresponding points is origin-independent and is the
+    physical paste displacement.
+
+    Parameters
+    ----------
+    inlier_src, inlier_dst : np.ndarray
+        (N, 2) arrays of corresponding (x, y) inliers.
+
+    Returns
+    -------
+    (tx, ty, distance) in pixels, or None if there are no correspondences.
+    """
+    src = np.asarray(inlier_src, dtype=np.float64).reshape(-1, 2)
+    dst = np.asarray(inlier_dst, dtype=np.float64).reshape(-1, 2)
+    if len(src) == 0 or len(src) != len(dst):
+        return None
+
+    offset = dst.mean(axis=0) - src.mean(axis=0)
+    tx, ty = float(offset[0]), float(offset[1])
+    return tx, ty, float(math.hypot(tx, ty))

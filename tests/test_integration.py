@@ -10,8 +10,19 @@ import cv2
 import numpy as np
 import pytest
 
-from app.streamlit_app import run_full_pipeline, report_to_dict
+from app.streamlit_app import run_full_pipeline, report_to_dict, safe_upload_suffix
 from src.utils.data_types import ForensicReport
+
+
+def test_safe_upload_suffix_preserves_format():
+    """The temp-file suffix must follow the uploaded container format."""
+    assert safe_upload_suffix("photo.png") == ".png"
+    assert safe_upload_suffix("photo.JPG") == ".jpg"
+    assert safe_upload_suffix("photo.jpeg") == ".jpeg"
+    # Unknown / missing extensions fall back to JPEG.
+    assert safe_upload_suffix("photo") == ".jpg"
+    assert safe_upload_suffix("photo.gif") == ".jpg"
+    assert safe_upload_suffix("") == ".jpg"
 
 
 @pytest.fixture
