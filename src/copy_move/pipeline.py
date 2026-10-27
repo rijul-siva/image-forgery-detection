@@ -276,8 +276,19 @@ def run_copy_move_analysis(
     candidate_scores = getattr(geom, "candidate_scores", [])
     if candidate_scores:
         periodicity = float(candidate_scores[0].get("periodicity", 0.0))
+    best_candidate = candidate_scores[0] if candidate_scores else {}
+    lattice_ratio = float(best_candidate.get("lattice_ratio", 0.0))
+    # A small consensus drawn almost entirely from a detected repeating
+    # pattern is ambiguous: blur and contrast enhancement can make sign,
+    # grille, and awning textures look like a translated duplicate. Require
+    # broader support before calling those cases a copy-move.
+    required_inliers = max(
+        forgery_min_inliers,
+        20 if lattice_ratio >= 0.75 else forgery_min_inliers,
+    )
+    periodic_match_rejected = lattice_ratio >= 0.75 and num_inliers < required_inliers
     forgery_detected = (
-        num_inliers >= forgery_min_inliers
+        num_inliers >= required_inliers
         and inlier_ratio >= forgery_min_inlier_ratio
         and periodicity <= max_periodicity
     )
@@ -344,6 +355,7 @@ def run_copy_move_analysis(
         coarse_region_visualization=coarse_vis,
         boundary_extraction_enabled=boundary_extraction,
         boundary_refined_regions=loc.boundary_refined_count,
+        periodic_match_rejected=periodic_match_rejected,
         closing_kernel_sizes=loc.closing_kernel_sizes or [],
         dilation_kernel_sizes=loc.dilation_kernel_sizes or [],
     )

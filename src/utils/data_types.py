@@ -17,7 +17,7 @@ class PreprocessResult:
     scale_factor: float              # How much the image was resized
     original_width: int
     original_height: int
-    denoised_image: Optional[np.ndarray] = None  # Gaussian smoothed image (DIP Stage 1)
+    denoised_image: Optional[np.ndarray] = None  # Non-local means output (DIP Stage 1)
     clahe_image: Optional[np.ndarray] = None     # CLAHE contrast enhanced image (DIP Stage 1)
     base_gray_image: Optional[np.ndarray] = None # Grayscale before CLAHE (DIP Stage 1)
 
@@ -84,6 +84,7 @@ class CopyMoveResult:
     coarse_region_visualization: Optional[np.ndarray] = None
     boundary_extraction_enabled: bool = False
     boundary_refined_regions: int = 0
+    periodic_match_rejected: bool = False
     closing_kernel_sizes: list = field(default_factory=list)
     dilation_kernel_sizes: list = field(default_factory=list)
     # Displacement-clustering diagnostics: periodic lattices (repeating UI

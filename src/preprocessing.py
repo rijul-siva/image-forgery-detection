@@ -26,13 +26,14 @@ def preprocess_image(
     image_path: str, 
     max_edge: int = 1600,
     denoise: bool = False,
+    denoise_strength: int = 12,
     enhance_clahe: bool = False,
     clahe_clip_limit: float = 2.0,
     clahe_tile_grid_size: int = 8
 ) -> PreprocessResult:
     """
     Load, validate, resize (preserving aspect ratio), convert to grayscale, 
-    and optionally apply mild Gaussian noise reduction and CLAHE contrast enhancement.
+    and optionally apply colored non-local means denoising and CLAHE contrast enhancement.
 
     Parameters
     ----------
@@ -41,7 +42,10 @@ def preprocess_image(
     max_edge : int, optional
         Maximum pixel length for the longest edge (default 1600).
     denoise : bool, optional
-        Whether to apply mild Gaussian denoising (default False).
+        Whether to use the denoised image for downstream grayscale analysis (default False).
+    denoise_strength : int, optional
+        Non-local means noise reduction strength. Higher values remove more noise but
+        can also smooth fine detail (default 12).
     enhance_clahe : bool, optional
         Whether to use CLAHE enhanced grayscale for feature detection (default False).
     clahe_clip_limit : float, optional
@@ -73,13 +77,27 @@ def preprocess_image(
         new_height = int(round(original_height * scale_factor))
         image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
 
-    # Gaussian smoothing to demonstrate spatial noise reduction
-    denoised_image = cv2.GaussianBlur(image, (3, 3), 0.5)
-    if denoise:
-        image = denoised_image
+    # Keep the resized original for overlays and comparisons. Non-local means
+    # removes noise while preserving edges better than the previous mild blur.
+    color_image = image
+    if denoise_strength < 0:
+        raise ValueError("denoise_strength must be non-negative")
+    denoised_image = (
+        cv2.fastNlMeansDenoisingColored(
+            color_image,
+            None,
+            h=float(denoise_strength),
+            hColor=float(denoise_strength),
+            templateWindowSize=7,
+            searchWindowSize=21,
+        )
+        if denoise_strength > 0
+        else color_image.copy()
+    )
+    analysis_image = denoised_image if denoise else color_image
 
     # Convert to grayscale for feature detection (0.299 R + 0.587 G + 0.114 B)
-    base_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    base_gray = cv2.cvtColor(analysis_image, cv2.COLOR_BGR2GRAY)
 
     # Compute CLAHE enhanced representation (DIP Stage 1 contextual histogram equalization)
     clahe_image = apply_clahe(base_gray, clip_limit=clahe_clip_limit, tile_size=clahe_tile_grid_size)
@@ -87,7 +105,7 @@ def preprocess_image(
     gray_image = clahe_image if enhance_clahe else base_gray
 
     return PreprocessResult(
-        color_image=image,
+        color_image=color_image,
         gray_image=gray_image,
         scale_factor=float(scale_factor),
         original_width=int(original_width),

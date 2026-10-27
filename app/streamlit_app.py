@@ -57,6 +57,8 @@ def run_full_pipeline(
     ransac_threshold: float = 3.0,
     ela_quality: int = 95,
     max_edge: int = 1600,
+    denoise: bool = True,
+    denoise_strength: int = 12,
     enhance_clahe: bool = True,
     clahe_clip_limit: float = 2.0,
     boundary_extraction: bool = False,
@@ -67,6 +69,8 @@ def run_full_pipeline(
     preprocess = preprocess_image(
         image_path, 
         max_edge=max_edge, 
+        denoise=denoise,
+        denoise_strength=denoise_strength,
         enhance_clahe=enhance_clahe, 
         clahe_clip_limit=clahe_clip_limit
     )
@@ -150,6 +154,7 @@ def report_to_dict(report: ForensicReport) -> dict:
             "regions": regions_list,
             "boundary_extraction_enabled": cm.boundary_extraction_enabled,
             "boundary_refined_regions": cm.boundary_refined_regions,
+            "periodic_match_rejected": cm.periodic_match_rejected,
             "coarse_regions": [
                 [r.bbox_x, r.bbox_y, r.bbox_width, r.bbox_height]
                 for r in (cm.coarse_regions or [])
@@ -230,6 +235,14 @@ def main():
     ransac_threshold = st.sidebar.slider("RANSAC Inlier Threshold (px)", 1.0, 10.0, 3.0, 0.5, help="Maximum reprojection error for inlier matches.")
     ela_quality = st.sidebar.slider("ELA JPEG Quality Level", 80, 100, 95, 1, help="Quality level for JPEG re-compression.")
     max_edge = st.sidebar.select_slider("Max Image Edge (Resolution Cap)", options=[800, 1200, 1600, 2000], value=1600)
+    denoise_strength = st.sidebar.slider(
+        "Denoising Strength",
+        0,
+        20,
+        12,
+        1,
+        help="Non-local means strength. Higher values reduce more noise but may soften fine detail; 0 disables denoising.",
+    )
     
     st.sidebar.subheader("🔬 DIP Enhancements")
     clahe_clip_limit = st.sidebar.slider(
@@ -266,6 +279,7 @@ def main():
                     ransac_threshold=ransac_threshold,
                     ela_quality=ela_quality,
                     max_edge=max_edge,
+                    denoise_strength=denoise_strength,
                     clahe_clip_limit=clahe_clip_limit,
                     boundary_extraction=boundary_extraction,
                 )
@@ -278,6 +292,11 @@ def main():
                 st.error(f"🚨 **POSSIBLE COPY-MOVE FORGERY DETECTED** (Inlier Match Confidence: {cm.confidence_score:.1%})")
             else:
                 st.info("✅ **NO SIGNIFICANT COPY-MOVE FORGERY DETECTED**")
+                if cm.periodic_match_rejected:
+                    st.caption(
+                        "A weak match overlapped a repeated texture pattern, so it was not "
+                        "counted as a copy-move."
+                    )
                 
             # Quick Metrics Bar
             m1, m2, m3, m4, m5 = st.columns(5)
@@ -340,7 +359,7 @@ def main():
                     st.markdown("""
                     **DIP Concepts:** Color-to-grayscale intensity conversion via luminance weighting 
                     $Y = 0.299R + 0.587G + 0.114B$, decimation via area interpolation (`cv2.INTER_AREA`), 
-                    high-frequency noise suppression via 2D Gaussian convolution $G(x,y,\\sigma)$, and 
+                    colored non-local means denoising, and
                     **local adaptive contrast enhancement via CLAHE** (Contrast Limited Adaptive Histogram Equalization).
                     """)
                     d1_col1, d1_col2, d1_col3, d1_col4 = st.columns(4)
@@ -354,11 +373,11 @@ def main():
                         if report.preprocess.denoised_image is not None:
                             st.image(
                                 cv2.cvtColor(report.preprocess.denoised_image, cv2.COLOR_BGR2RGB),
-                                caption="1.2 Gaussian Filtered (3×3, σ=0.5)",
+                                caption=f"1.2 Denoised (Non-local Means, h={denoise_strength}; used for detection)",
                                 use_container_width=True
                             )
                         else:
-                            st.info("Gaussian smoothing disabled in current run.")
+                            st.info("Denoising output unavailable.")
                     with d1_col3:
                         st.image(
                             report.preprocess.base_gray_image
@@ -378,6 +397,28 @@ def main():
                             st.info("CLAHE enhancement disabled.")
 
                     # Grayscale Histogram
+                    st.markdown("#### Noise Reduction Comparison")
+                    st.caption(
+                        "Non-local means averages similar image patches to reduce noise. "
+                        "It cannot recover detail that was not captured, and stronger settings may soften texture."
+                    )
+                    original_rgb = cv2.cvtColor(report.preprocess.color_image, cv2.COLOR_BGR2RGB)
+                    denoised_rgb = cv2.cvtColor(report.preprocess.denoised_image, cv2.COLOR_BGR2RGB)
+                    preview_height = 680
+                    comparison_col1, comparison_col2 = st.columns(2, gap="medium")
+                    with comparison_col1:
+                        st.image(
+                            fit_dip_preview(original_rgb, max_width=700, max_height=preview_height),
+                            caption="Original (resized for analysis)",
+                            width="content",
+                        )
+                    with comparison_col2:
+                        st.image(
+                            fit_dip_preview(denoised_rgb, max_width=700, max_height=preview_height),
+                            caption=f"Restored — denoising strength {denoise_strength}",
+                            width="content",
+                        )
+
                     hist, _ = np.histogram(report.preprocess.gray_image, bins=32, range=(0, 256))
                     st.caption("Detection Grayscale Histogram after CLAHE (32 bins):")
                     st.bar_chart(hist)
