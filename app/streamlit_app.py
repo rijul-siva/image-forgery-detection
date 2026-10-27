@@ -58,7 +58,8 @@ def run_full_pipeline(
     ela_quality: int = 95,
     max_edge: int = 1600,
     enhance_clahe: bool = False,
-    clahe_clip_limit: float = 2.0
+    clahe_clip_limit: float = 2.0,
+    boundary_extraction: bool = False,
 ) -> ForensicReport:
     """
     Master function that runs the entire PixelGuard pipeline.
@@ -76,6 +77,7 @@ def run_full_pipeline(
         ratio=ratio,
         ransac_threshold=ransac_threshold,
         preprocess_scale=preprocess.scale_factor,
+        boundary_extraction=boundary_extraction,
     )
     # ELA is scored statistically inside the detected copy-move regions.
     ela = run_ela_analysis(
@@ -146,6 +148,12 @@ def report_to_dict(report: ForensicReport) -> dict:
             "confidence_score": round(float(cm.confidence_score), 4),
             "transform_parameters": tp_dict,
             "regions": regions_list,
+            "boundary_extraction_enabled": cm.boundary_extraction_enabled,
+            "boundary_refined_regions": cm.boundary_refined_regions,
+            "coarse_regions": [
+                [r.bbox_x, r.bbox_y, r.bbox_width, r.bbox_height]
+                for r in (cm.coarse_regions or [])
+            ],
             "displacement_clusters": cm.num_displacement_clusters,
             "ignored_periodic_lattices": list(cm.periodic_lattices),
         },
@@ -233,6 +241,11 @@ def main():
         st.sidebar.slider("CLAHE Clip Limit", 1.0, 5.0, 2.0, 0.5, help="Higher = more contrast amplification.")
         if enhance_clahe else 2.0
     )
+    boundary_extraction = st.sidebar.checkbox(
+        "Refine object boundaries (GrabCut)",
+        value=False,
+        help="Compare a color-based boundary refinement with the feature-match region. This can fail on low-contrast or clipped objects.",
+    )
     
     uploaded_file = st.file_uploader("Upload Smartphone Image...", type=["jpg", "jpeg", "png"])
     
@@ -255,7 +268,8 @@ def main():
                     ela_quality=ela_quality,
                     max_edge=max_edge,
                     enhance_clahe=enhance_clahe,
-                    clahe_clip_limit=clahe_clip_limit
+                    clahe_clip_limit=clahe_clip_limit,
+                    boundary_extraction=boundary_extraction,
                 )
                 
             st.success("Analysis Complete!")
@@ -463,9 +477,9 @@ def main():
                     st.markdown("""
                     **DIP Concepts:** Mathematical morphology on binary keypoint masks:
                     1. **Raw Mask:** Keypoint footprint discs drawn at verified inlier positions.
-                    2. **Morphological Closing:** $A \\bullet B = (A \\oplus B) \\ominus B$ (dilation followed by erosion with $7\\times 7$ ellipse) to fuse interior gaps.
-                    3. **Morphological Dilation:** $A \\oplus B$ to expand coverage to object boundaries.
-                    4. **Connected Components & Contours:** Green's theorem area integration $\\iint dx dy$ and centroid spatial moments $m_{10}/m_{00}, m_{01}/m_{00}$.
+                    2. **Morphological Closing:** $A \\bullet B = (A \\oplus B) \\ominus B$ with an adaptive elliptical kernel to bridge gaps between verified points.
+                    3. **Morphological Dilation:** $A \\oplus B$ with a separate kernel to expand the closed support.
+                    4. **Region Metrics:** Bounding boxes and area span all retained verified components; disconnected matches are not discarded.
                     """)
                     m_col1, m_col2, m_col3, m_col4 = st.columns(4)
                     with m_col1:
@@ -475,21 +489,70 @@ def main():
                             st.caption("No mask generated.")
                     with m_col2:
                         if cm.closed_mask is not None:
-                            st.image(cm.closed_mask, caption="5.2 Morphological Closing (A • B)", use_container_width=True)
+                            kernel_sizes = ", ".join(str(size) for size in sorted(set(cm.closing_kernel_sizes)))
+                            st.image(
+                                cm.closed_mask,
+                                caption=f"5.2 Morphological Closing (A • B), adaptive k={kernel_sizes or '—'}",
+                                use_container_width=True,
+                            )
                         else:
                             st.caption("No closed mask.")
                     with m_col3:
                         if cm.dilated_mask is not None:
-                            st.image(cm.dilated_mask, caption="5.3 Morphological Dilation (A ⊕ B)", use_container_width=True)
+                            kernel_sizes = ", ".join(str(size) for size in sorted(set(cm.dilation_kernel_sizes)))
+                            st.image(
+                                cm.dilated_mask,
+                                caption=f"5.3 Morphological Dilation (A ⊕ B), k={kernel_sizes or '—'}",
+                                use_container_width=True,
+                            )
                         else:
                             st.caption("No dilated mask.")
                     with m_col4:
                         if cm.region_visualization is not None:
                             st.image(
                                 cv2.cvtColor(cm.region_visualization, cv2.COLOR_BGR2RGB),
-                                caption="5.4 Contours & Displacement Vector",
+                                caption=(
+                                    "5.4 GrabCut Boundary Result"
+                                    if cm.boundary_extraction_enabled
+                                    else "5.4 Contours & Displacement Vector"
+                                ),
                                 use_container_width=True
                             )
+
+                    if cm.boundary_extraction_enabled:
+                        st.markdown("#### Boundary Extraction Comparison")
+                        if cm.boundary_refined_regions:
+                            st.caption(
+                                f"GrabCut refined {cm.boundary_refined_regions} region(s). "
+                                "The boundary result is used in the final output and ELA analysis."
+                            )
+                        else:
+                            st.warning(
+                                "GrabCut could not refine these regions reliably; the final output "
+                                "falls back to the feature-match localization."
+                            )
+                        if cm.coarse_region_visualization is not None and cm.region_visualization is not None:
+                            coarse_col, refined_col = st.columns(2)
+                            with coarse_col:
+                                st.image(
+                                    fit_dip_preview(
+                                        cv2.cvtColor(cm.coarse_region_visualization, cv2.COLOR_BGR2RGB),
+                                        max_width=680,
+                                        max_height=480,
+                                    ),
+                                    caption="5.5 Feature-Match Localization",
+                                    width="content",
+                                )
+                            with refined_col:
+                                st.image(
+                                    fit_dip_preview(
+                                        cv2.cvtColor(cm.region_visualization, cv2.COLOR_BGR2RGB),
+                                        max_width=680,
+                                        max_height=480,
+                                    ),
+                                    caption="5.6 GrabCut Boundary Extraction",
+                                    width="content",
+                                )
 
                 # --- DIP STAGE 6: Error Level Analysis (JPEG Compression Forensics) ---
                 with st.expander("📍 DIP Stage 6: Error Level Analysis (JPEG Compression Forensics)", expanded=True):

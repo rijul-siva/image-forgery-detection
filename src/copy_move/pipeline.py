@@ -36,7 +36,7 @@ from src.utils.data_types import (
 from .feature_extraction import extract_features
 from .feature_matching import match_features, suppress_repetitive_patterns
 from .geometric_verification import verify_geometric, verify_geometric_clustered
-from .localization import localize_forgery
+from .localization import localize_forgery, refine_region_boundaries
 from .parameters import decompose_affine, physical_translation
 from .visualization import draw_matches, draw_regions, draw_transformation_arrow
 
@@ -67,6 +67,7 @@ def _empty_result(
     periodic_lattices: Optional[list] = None,
     num_displacement_clusters: int = 0,
     candidate_scores: Optional[list] = None,
+    boundary_extraction_enabled: bool = False,
 ) -> CopyMoveResult:
     return CopyMoveResult(
         forgery_detected=False,
@@ -89,6 +90,7 @@ def _empty_result(
         periodic_lattices=periodic_lattices if periodic_lattices is not None else [],
         num_displacement_clusters=num_displacement_clusters,
         candidate_scores=candidate_scores if candidate_scores is not None else [],
+        boundary_extraction_enabled=boundary_extraction_enabled,
     )
 
 
@@ -109,6 +111,7 @@ def run_copy_move_analysis(
     displacement_tolerance: float = DEFAULTS["displacement_tolerance"],
     max_periodicity: float = DEFAULTS["max_periodicity"],
     preprocess_scale: float = 1.0,
+    boundary_extraction: bool = False,
 ) -> CopyMoveResult:
     """
     Run the full copy-move detection pipeline on preprocessed images.
@@ -124,6 +127,9 @@ def run_copy_move_analysis(
         The preprocessing resize ratio (`PreprocessResult.scale_factor`),
         used to report region metrics in native photo coordinates. Defaults
         to 1.0 (analysis coordinates == native coordinates).
+    boundary_extraction : bool
+        Refine match regions with GrabCut and preserve the coarse result for
+        comparison in the DIP stages.
     clustered_verification : bool
         Group the matches by their shift vector and fit a model per group
         instead of running a single global RANSAC. This keeps a repetitive
@@ -147,7 +153,7 @@ def run_copy_move_analysis(
     try:
         features = extract_features(gray_image, detector=detector)
     except Exception:
-        return _empty_result(color_image)
+        return _empty_result(color_image, boundary_extraction_enabled=boundary_extraction)
 
     # Render rich scale-space keypoint visualization
     keypoints_vis = cv2.drawKeypoints(
@@ -159,7 +165,11 @@ def run_copy_move_analysis(
     )
 
     if features.descriptors is None or len(features.keypoints) < min_match_count:
-        return _empty_result(color_image, keypoints_vis=keypoints_vis)
+        return _empty_result(
+            color_image,
+            keypoints_vis=keypoints_vis,
+            boundary_extraction_enabled=boundary_extraction,
+        )
 
     # --- Steps 5-6: matching + filtering (DIP Stage 3) --------------------
     matches = match_features(
@@ -179,7 +189,8 @@ def run_copy_move_analysis(
             color_image,
             num_total_matches=0,
             keypoints_vis=keypoints_vis,
-            raw_matches_vis=raw_matches_vis
+            raw_matches_vis=raw_matches_vis,
+            boundary_extraction_enabled=boundary_extraction,
         )
 
     # --- Step 7: RANSAC geometric verification (DIP Stage 4) --------------
@@ -233,6 +244,7 @@ def run_copy_move_analysis(
             periodic_lattices=periodic_lattices,
             num_displacement_clusters=getattr(geom, "num_displacement_clusters", 0),
             candidate_scores=getattr(geom, "candidate_scores", []),
+            boundary_extraction_enabled=boundary_extraction,
         )
 
     # --- Step 8: affine decomposition ------------------------------------
@@ -280,11 +292,27 @@ def run_copy_move_analysis(
         image_shape,
         scale_factor=preprocess_scale,
     )
+    if boundary_extraction:
+        loc = refine_region_boundaries(
+            color_image,
+            loc,
+            scale_factor=preprocess_scale,
+        )
+
     region_infos: list[RegionInfo] = [r.info for r in loc.regions]
     region_vis = draw_regions(color_image, loc.regions)
     if len(loc.regions) >= 2:
         # Draw the arrow only when we have a clear pair.
         region_vis = draw_transformation_arrow(region_vis, loc.regions)
+    coarse_infos = (
+        [r.info for r in loc.coarse_regions]
+        if loc.coarse_regions is not None else None
+    )
+    coarse_vis = None
+    if loc.coarse_regions is not None:
+        coarse_vis = draw_regions(color_image, loc.coarse_regions)
+        if len(loc.coarse_regions) >= 2:
+            coarse_vis = draw_transformation_arrow(coarse_vis, loc.coarse_regions)
 
     # Convert numpy arrays to plain (x, y) tuples for the dataclass contract.
     src_pts = [(float(x), float(y)) for x, y in geom.inlier_src]
@@ -311,6 +339,13 @@ def run_copy_move_analysis(
         periodic_lattices=periodic_lattices,
         num_displacement_clusters=getattr(geom, "num_displacement_clusters", 0),
         candidate_scores=getattr(geom, "candidate_scores", []),
+        coarse_regions=coarse_infos,
+        coarse_mask=loc.coarse_mask,
+        coarse_region_visualization=coarse_vis,
+        boundary_extraction_enabled=boundary_extraction,
+        boundary_refined_regions=loc.boundary_refined_count,
+        closing_kernel_sizes=loc.closing_kernel_sizes or [],
+        dilation_kernel_sizes=loc.dilation_kernel_sizes or [],
     )
 
 

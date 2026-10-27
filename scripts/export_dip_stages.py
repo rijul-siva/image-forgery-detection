@@ -31,7 +31,8 @@ def export_dip_stages(
     ratio: float = 0.75,
     ransac_threshold: float = 3.0,
     ela_quality: int = 95,
-    ela_amplification: int = 20
+    ela_amplification: int = 20,
+    boundary_extraction: bool = False,
 ) -> dict:
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -66,7 +67,8 @@ def export_dip_stages(
         prep.color_image,
         detector=detector,
         ratio=ratio,
-        ransac_threshold=ransac_threshold
+        ransac_threshold=ransac_threshold,
+        boundary_extraction=boundary_extraction,
     )
 
     # Stage 2: Feature Keypoints
@@ -91,21 +93,31 @@ def export_dip_stages(
     
     if cm.closed_mask is not None:
         cv2.imwrite(str(out_path / "08_morphological_closing.png"), cm.closed_mask)
-        print("   - Saved: 08_morphological_closing.png (Morphological closing [closing = dilate then erode], 7x7 ellipse)")
+        print("   - Saved: 08_morphological_closing.png (Adaptive elliptical closing bridges verified keypoint gaps)")
 
     if cm.dilated_mask is not None:
         cv2.imwrite(str(out_path / "09_morphological_dilation.png"), cm.dilated_mask)
-        print("   - Saved: 09_morphological_dilation.png (Morphological dilation, boundary expansion)")
+        print("   - Saved: 09_morphological_dilation.png (Separate elliptical dilation expands the closed support)")
+
+    if cm.coarse_region_visualization is not None:
+        cv2.imwrite(str(out_path / "10_feature_match_localization.png"), cm.coarse_region_visualization)
+        print("   - Saved: 10_feature_match_localization.png (Coarse localization before GrabCut)")
 
     if cm.region_visualization is not None:
         cv2.imwrite(str(out_path / "10_final_segmented_regions.png"), cm.region_visualization)
-        print("   - Saved: 10_final_segmented_regions.png (Contour extraction, Bounding Box, Translation Arrow)")
+        stage_label = "GrabCut boundary result" if cm.boundary_extraction_enabled else "Morphological localization"
+        print(f"   - Saved: 10_final_segmented_regions.png ({stage_label}, bounding boxes, translation arrow)")
 
     # -------------------------------------------------------------
     # STAGE 6: Error Level Analysis (ELA)
     # -------------------------------------------------------------
     print("\n>> [DIP Stage 6] Error Level Analysis (Compression Forensics)...")
-    ela = run_ela_analysis(image_path, quality=ela_quality, amplification=ela_amplification)
+    ela = run_ela_analysis(
+        image_path,
+        quality=ela_quality,
+        amplification=ela_amplification,
+        region_mask=cm.mask,
+    )
     
     if ela.compressed_image is not None:
         cv2.imwrite(str(out_path / "11_ela_jpeg_resaved.png"), ela.compressed_image)
@@ -141,7 +153,11 @@ def export_dip_stages(
                 "scale_factor": cm.transform_params.scale_factor if cm.transform_params else None,
                 "translation_distance_px": cm.transform_params.translation_distance if cm.transform_params else None,
             } if cm.transform_params else None,
-            "regions_count": len(cm.regions)
+            "regions_count": len(cm.regions),
+            "boundary_extraction_enabled": cm.boundary_extraction_enabled,
+            "boundary_refined_regions": cm.boundary_refined_regions,
+            "closing_kernel_sizes": cm.closing_kernel_sizes,
+            "dilation_kernel_sizes": cm.dilation_kernel_sizes,
         },
         "ela": {
             "suspicion_level": ela.suspicion_level,
@@ -180,6 +196,11 @@ def main():
         default="sift",
         help="Feature detector (orb or sift)"
     )
+    parser.add_argument(
+        "--boundary-extraction",
+        action="store_true",
+        help="Run GrabCut boundary refinement and export the coarse and refined DIP outputs",
+    )
     args = parser.parse_args()
 
     # Fallback to smoke_forged.png if default image not found
@@ -194,7 +215,8 @@ def main():
     export_dip_stages(
         str(img_path),
         output_dir=args.output_dir,
-        detector=args.detector
+        detector=args.detector,
+        boundary_extraction=args.boundary_extraction,
     )
 
 

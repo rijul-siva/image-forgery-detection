@@ -7,10 +7,11 @@ locations (k >= 2), rather than assuming exactly one source and one copy.
 Each cluster is turned into a mask:
 
   - Draw each cluster into its own binary mask.
-  - Fill the convex hull of its matched keypoints to retain the full spatial footprint.
-  - Run morphological closing + dilation to fill gaps between sparse
-    keypoints.
-  - Keep the largest connected component as the localized match area.
+  - Use adaptive morphological closing to bridge gaps between nearby
+    verified keypoints.
+  - Dilate the closed mask separately to expand its support.
+  - Preserve all components from the verified cluster when computing its
+    region metrics.
   - Compute bounding box, area (px and % of image), and centroid, in both
     the resized analysis canvas and the original native resolution.
 
@@ -52,6 +53,11 @@ class LocalizationResult:
     raw_mask: Optional[np.ndarray] = None      # Keypoint footprint mask before morphology
     closed_mask: Optional[np.ndarray] = None   # Mask after morphological closing (A • B)
     dilated_mask: Optional[np.ndarray] = None  # Mask after morphological dilation (A ⊕ B)
+    coarse_mask: Optional[np.ndarray] = None   # Original hull-based localization when refined
+    coarse_regions: Optional[List[LocalizedRegion]] = None
+    boundary_refined_count: int = 0
+    closing_kernel_sizes: Optional[List[int]] = None
+    dilation_kernel_sizes: Optional[List[int]] = None
 
 
 def _adaptive_cluster(points: PointArray, image_shape: Tuple[int, int]) -> np.ndarray:
@@ -131,26 +137,36 @@ def _points_to_mask(
     return mask
 
 
-def _points_to_region_mask(
-    points: PointArray,
-    image_shape: Tuple[int, int],
-) -> np.ndarray:
-    """Fill the keypoint hull so sparse matches represent their full extent."""
-    mask = _points_to_mask(points, image_shape)
-    if len(points) < 3:
-        return mask
+def _adaptive_kernel_size(points: PointArray) -> int:
+    """Choose an odd closing kernel from feature density and cluster extent."""
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    if len(points) < 2:
+        return 7
 
-    hull = cv2.convexHull(np.asarray(points, dtype=np.float32).reshape(-1, 1, 2))
-    cv2.fillConvexPoly(mask, np.rint(hull).astype(np.int32), 255)
-    return mask
+    extent = np.ptp(points, axis=0)
+    short_extent = max(1.0, float(np.min(extent)))
+    density_spacing = float(np.sqrt(max(1.0, np.prod(extent)) / len(points)))
+    desired = int(round(2.0 * density_spacing + 1.0))
+    upper_bound = min(51, max(7, int(round(short_extent * 0.35))))
+    size = min(max(7, desired), upper_bound)
+    if size % 2 == 0:
+        size = size - 1 if size == upper_bound else size + 1
+    return max(7, size)
 
 
-def _refine_mask_stages(mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _refine_mask_stages(
+    mask: np.ndarray,
+    closing_kernel_size: int = 7,
+    dilation_kernel_size: int = 7,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Step-by-step mathematical morphology:
-    1. Morphological Closing (A • B = (A ⊕ B) ⊖ B) with an elliptical kernel to fuse interior gaps.
-    2. Morphological Dilation (A ⊕ B) to expand region coverage.
-    3. Connected component analysis to keep the dominant contiguous region.
+    1. Morphological Closing (A • B = (A ⊕ B) ⊖ B) with an adaptive
+       elliptical kernel to bridge sparse feature points.
+    2. Morphological Dilation (A ⊕ B) with a separate kernel to expand the
+       closed feature support.
+    3. Preserve all verified components so sparse but valid matches still
+       contribute to the region bounds.
 
     Returns
     -------
@@ -159,22 +175,21 @@ def _refine_mask_stages(mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.nd
     if mask is None or mask.size == 0 or mask.max() == 0:
         return mask, mask, mask
 
-    # Structuring element: 7x7 ellipse
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    dilated = cv2.dilate(closed, kernel, iterations=1)
-
-    # Connected component labeling (8-connectivity)
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(dilated, connectivity=8)
-    if num_labels <= 1:
-        return closed, dilated, dilated
-    largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    out = np.where(labels == largest, 255, 0).astype(np.uint8)
-    return closed, dilated, out
+    closing_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (closing_kernel_size, closing_kernel_size),
+    )
+    dilation_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (dilation_kernel_size, dilation_kernel_size),
+    )
+    closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, closing_kernel, iterations=1)
+    dilated = cv2.dilate(closed, dilation_kernel, iterations=1)
+    return closed, dilated, dilated
 
 
 def _refine_mask(mask: np.ndarray) -> np.ndarray:
-    """Morphological closing + dilation, then keep the largest connected component."""
+    """Apply adaptive closing and dilation while retaining verified components."""
     _, _, out = _refine_mask_stages(mask)
     return out
 
@@ -192,23 +207,17 @@ def _compute_region_info(
     if mask is None or mask.size == 0 or mask.max() == 0:
         return None
 
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
+    ys, xs = np.nonzero(mask)
+    if len(xs) == 0:
         return None
-    contour = max(contours, key=cv2.contourArea)
-
-    x, y, w, h = cv2.boundingRect(contour)
-    area_px = float(cv2.contourArea(contour))
+    x, y = int(xs.min()), int(ys.min())
+    w, h = int(xs.max() - x + 1), int(ys.max() - y + 1)
+    area_px = float(len(xs))
     total_area = float(image_shape[0] * image_shape[1]) or 1.0
     area_percent = 100.0 * area_px / total_area
 
-    moments = cv2.moments(contour)
-    if moments["m00"] > 0:
-        cx = float(moments["m10"] / moments["m00"])
-        cy = float(moments["m01"] / moments["m00"])
-    else:
-        cx = float(x + w / 2.0)
-        cy = float(y + h / 2.0)
+    cx = float(xs.mean())
+    cy = float(ys.mean())
 
     # original_px = resized_px / scale_factor
     inv = 1.0 / scale_factor if scale_factor and scale_factor > 0 else 1.0
@@ -264,6 +273,8 @@ def localize_forgery(
     combined_raw_mask = np.zeros((h, w), dtype=np.uint8)
     combined_closed_mask = np.zeros((h, w), dtype=np.uint8)
     combined_dilated_mask = np.zeros((h, w), dtype=np.uint8)
+    closing_kernel_sizes: List[int] = []
+    dilation_kernel_sizes: List[int] = []
 
     src = np.asarray(inlier_src, dtype=np.float64).reshape(-1, 2)
     dst = np.asarray(inlier_dst, dtype=np.float64).reshape(-1, 2)
@@ -287,8 +298,15 @@ def localize_forgery(
     ) -> None:
         nonlocal combined_mask, combined_raw_mask, combined_closed_mask, combined_dilated_mask
         raw_mask = _points_to_mask(points, image_shape)
-        region_support = _points_to_region_mask(points, image_shape)
-        closed_m, dilated_m, refined = _refine_mask_stages(region_support)
+        closing_kernel_size = _adaptive_kernel_size(points)
+        dilation_kernel_size = max(7, (closing_kernel_size // 3) | 1)
+        closing_kernel_sizes.append(closing_kernel_size)
+        dilation_kernel_sizes.append(dilation_kernel_size)
+        closed_m, dilated_m, refined = _refine_mask_stages(
+            raw_mask,
+            closing_kernel_size=closing_kernel_size,
+            dilation_kernel_size=dilation_kernel_size,
+        )
         info = _compute_region_info(refined, image_shape, scale_factor)
         if info is None:
             return
@@ -331,7 +349,162 @@ def localize_forgery(
         image_shape=image_shape,
         raw_mask=combined_raw_mask,
         closed_mask=combined_closed_mask,
-        dilated_mask=combined_dilated_mask
+        dilated_mask=combined_dilated_mask,
+        closing_kernel_sizes=closing_kernel_sizes,
+        dilation_kernel_sizes=dilation_kernel_sizes,
+    )
+
+
+def refine_region_boundaries(
+    color_image: np.ndarray,
+    localization: LocalizationResult,
+    scale_factor: float = 1.0,
+    iterations: int = 5,
+) -> LocalizationResult:
+    """Refine each coarse region with GrabCut, retaining coarse results for comparison."""
+    if color_image is None or not localization.regions:
+        return localization
+
+    image_height, image_width = color_image.shape[:2]
+    max_grabcut_edge = 700
+    refined_regions: List[LocalizedRegion] = []
+    refined_count = 0
+
+    for region in localization.regions:
+        x, y, width, height = (
+            region.info.bbox_x,
+            region.info.bbox_y,
+            region.info.bbox_width,
+            region.info.bbox_height,
+        )
+        pad_x = max(8, int(round(width * 0.35)))
+        pad_y = max(8, int(round(height * 0.35)))
+        x0, y0 = max(0, x - pad_x), max(0, y - pad_y)
+        x1, y1 = min(image_width, x + width + pad_x), min(image_height, y + height + pad_y)
+        roi = color_image[y0:y1, x0:x1]
+
+        if roi.shape[0] < 8 or roi.shape[1] < 8:
+            refined_regions.append(region)
+            continue
+
+        grabcut_mask = np.full(roi.shape[:2], cv2.GC_PR_BGD, dtype=np.uint8)
+        support = region.mask[y0:y1, x0:x1] > 0
+        grabcut_mask[support] = cv2.GC_PR_FGD
+
+        points = region.keypoints_src if len(region.keypoints_src) else region.keypoints_dst
+        seed_radius = max(2, int(round(0.006 * min(roi.shape[:2]))))
+        for point_x, point_y in points:
+            local_x, local_y = int(round(point_x - x0)), int(round(point_y - y0))
+            if 0 <= local_x < roi.shape[1] and 0 <= local_y < roi.shape[0]:
+                cv2.circle(grabcut_mask, (local_x, local_y), seed_radius, cv2.GC_FGD, -1)
+
+        # Seed background only on ROI edges that are inside the image. This
+        # avoids declaring a pasted object at a photo edge to be background.
+        edge = min(3, max(1, min(roi.shape[:2]) // 16))
+        if x0 > 0:
+            grabcut_mask[:, :edge] = cv2.GC_BGD
+        if x1 < image_width:
+            grabcut_mask[:, -edge:] = cv2.GC_BGD
+        if y0 > 0:
+            grabcut_mask[:edge, :] = cv2.GC_BGD
+        if y1 < image_height:
+            grabcut_mask[-edge:, :] = cv2.GC_BGD
+
+        working_roi = roi
+        working_mask = grabcut_mask
+        work_scale = min(1.0, max_grabcut_edge / max(roi.shape[:2]))
+        if work_scale < 1.0:
+            working_size = (
+                max(1, int(round(roi.shape[1] * work_scale))),
+                max(1, int(round(roi.shape[0] * work_scale))),
+            )
+            working_roi = cv2.resize(roi, working_size, interpolation=cv2.INTER_AREA)
+            working_mask = cv2.resize(
+                grabcut_mask,
+                working_size,
+                interpolation=cv2.INTER_NEAREST,
+            )
+
+        try:
+            bg_model = np.zeros((1, 65), dtype=np.float64)
+            fg_model = np.zeros((1, 65), dtype=np.float64)
+            cv2.grabCut(
+                working_roi,
+                working_mask,
+                None,
+                bg_model,
+                fg_model,
+                iterations,
+                cv2.GC_INIT_WITH_MASK,
+            )
+        except cv2.error:
+            refined_regions.append(region)
+            continue
+
+        foreground = np.isin(working_mask, (cv2.GC_FGD, cv2.GC_PR_FGD)).astype(np.uint8)
+        if foreground.shape != roi.shape[:2]:
+            foreground = cv2.resize(
+                foreground,
+                (roi.shape[1], roi.shape[0]),
+                interpolation=cv2.INTER_NEAREST,
+            )
+        component_count, labels, stats, _ = cv2.connectedComponentsWithStats(foreground, connectivity=8)
+        if component_count <= 1:
+            refined_regions.append(region)
+            continue
+
+        # Keep the foreground component containing the most verified points.
+        point_labels = []
+        for point_x, point_y in points:
+            local_x, local_y = int(round(point_x - x0)), int(round(point_y - y0))
+            if 0 <= local_x < roi.shape[1] and 0 <= local_y < roi.shape[0]:
+                point_labels.append(int(labels[local_y, local_x]))
+        foreground_labels = [label for label in point_labels if label > 0]
+        if foreground_labels:
+            chosen_label = max(set(foreground_labels), key=foreground_labels.count)
+        else:
+            chosen_label = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+
+        component = (labels == chosen_label).astype(np.uint8)
+        refined_mask = np.zeros(localization.image_shape, dtype=np.uint8)
+        refined_mask[y0:y1, x0:x1] = component * 255
+        refined_area = int(np.count_nonzero(refined_mask))
+        support_area = int(np.count_nonzero(region.mask))
+        if refined_area < max(16, int(support_area * 0.2)):
+            refined_regions.append(region)
+            continue
+
+        info = _compute_region_info(refined_mask, localization.image_shape, scale_factor)
+        if info is None:
+            refined_regions.append(region)
+            continue
+
+        refined_regions.append(
+            LocalizedRegion(
+                mask=refined_mask,
+                info=info,
+                keypoints_src=region.keypoints_src,
+                keypoints_dst=region.keypoints_dst,
+            )
+        )
+        refined_count += 1
+
+    combined_mask = np.zeros(localization.image_shape, dtype=np.uint8)
+    for region in refined_regions:
+        combined_mask = cv2.bitwise_or(combined_mask, region.mask)
+
+    return LocalizationResult(
+        combined_mask=combined_mask,
+        regions=refined_regions,
+        image_shape=localization.image_shape,
+        raw_mask=localization.raw_mask,
+        closed_mask=localization.closed_mask,
+        dilated_mask=localization.dilated_mask,
+        coarse_mask=localization.combined_mask,
+        coarse_regions=localization.regions,
+        boundary_refined_count=refined_count,
+        closing_kernel_sizes=localization.closing_kernel_sizes,
+        dilation_kernel_sizes=localization.dilation_kernel_sizes,
     )
 
 
