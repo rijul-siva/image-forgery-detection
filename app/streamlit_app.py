@@ -309,20 +309,20 @@ def main():
                             use_container_width=True
                         )
                     with d1_col2:
-                        st.image(
-                            report.preprocess.gray_image,
-                            caption="1.2 Grayscale Luminance (1-Channel uint8)",
-                            use_container_width=True
-                        )
-                    with d1_col3:
                         if report.preprocess.denoised_image is not None:
                             st.image(
                                 cv2.cvtColor(report.preprocess.denoised_image, cv2.COLOR_BGR2RGB),
-                                caption="1.3 Gaussian Filtered (3×3, σ=0.5)",
+                                caption="1.2 Gaussian Filtered (3×3, σ=0.5)",
                                 use_container_width=True
                             )
                         else:
                             st.info("Gaussian smoothing disabled in current run.")
+                    with d1_col3:
+                        st.image(
+                            report.preprocess.gray_image,
+                            caption="1.3 Grayscale Luminance (1-Channel uint8)",
+                            use_container_width=True
+                        )
                     with d1_col4:
                         if report.preprocess.clahe_image is not None:
                             st.image(
