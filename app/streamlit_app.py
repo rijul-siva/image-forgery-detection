@@ -14,6 +14,19 @@ from src.utils.data_types import ForensicReport
 ALLOWED_UPLOAD_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 
+def fit_dip_preview(image: np.ndarray, max_width: int = 900, max_height: int = 520) -> np.ndarray:
+    """Scale a DIP preview to fit a screen while preserving its aspect ratio."""
+    height, width = image.shape[:2]
+    scale = min(max_width / width, max_height / height, 1.0)
+    if scale == 1.0:
+        return image
+    return cv2.resize(
+        image,
+        (max(1, round(width * scale)), max(1, round(height * scale))),
+        interpolation=cv2.INTER_AREA,
+    )
+
+
 def safe_upload_suffix(filename: str) -> str:
     """Return a decoder-safe temporary-file suffix for an uploaded file.
 
@@ -348,9 +361,9 @@ def main():
                     with d2_col1:
                         if cm.keypoints_visualization is not None:
                             st.image(
-                                cv2.cvtColor(cm.keypoints_visualization, cv2.COLOR_BGR2RGB),
+                                fit_dip_preview(cv2.cvtColor(cm.keypoints_visualization, cv2.COLOR_BGR2RGB)),
                                 caption=f"2.1 Detected Scale-Space Keypoints ({detector.upper()}) with Scale Circles & Orientation Vectors",
-                                use_container_width=True
+                                width="content"
                             )
                     with d2_col2:
                         st.markdown("### Keypoint Metrics")
@@ -369,9 +382,9 @@ def main():
                     with d3_col1:
                         if cm.raw_matches_visualization is not None:
                             st.image(
-                                cv2.cvtColor(cm.raw_matches_visualization, cv2.COLOR_BGR2RGB),
+                                fit_dip_preview(cv2.cvtColor(cm.raw_matches_visualization, cv2.COLOR_BGR2RGB)),
                                 caption="3.1 Candidate Feature Matches Surviving Ratio & Spatial Suppression",
-                                use_container_width=True
+                                width="content"
                             )
                     with d3_col2:
                         st.markdown("### Matching Parameters")
@@ -390,9 +403,9 @@ def main():
                     with d4_col1:
                         if cm.match_visualization is not None:
                             st.image(
-                                cv2.cvtColor(cm.match_visualization, cv2.COLOR_BGR2RGB),
+                                fit_dip_preview(cv2.cvtColor(cm.match_visualization, cv2.COLOR_BGR2RGB)),
                                 caption="4.1 RANSAC Classification (Green = Geometric Inliers, Red = Outliers)",
-                                use_container_width=True
+                                width="content"
                             )
                     with d4_col2:
                         st.markdown("### RANSAC Decomposed Parameters")
