@@ -57,7 +57,7 @@ def run_full_pipeline(
     ransac_threshold: float = 3.0,
     ela_quality: int = 95,
     max_edge: int = 1600,
-    enhance_clahe: bool = False,
+    enhance_clahe: bool = True,
     clahe_clip_limit: float = 2.0,
     boundary_extraction: bool = False,
 ) -> ForensicReport:
@@ -232,14 +232,13 @@ def main():
     max_edge = st.sidebar.select_slider("Max Image Edge (Resolution Cap)", options=[800, 1200, 1600, 2000], value=1600)
     
     st.sidebar.subheader("🔬 DIP Enhancements")
-    enhance_clahe = st.sidebar.checkbox(
-        "Enhance Contrast (CLAHE)", 
-        value=False, 
-        help="Contrast Limited Adaptive Histogram Equalization boosts local contrast in shadowy or low-contrast regions."
-    )
-    clahe_clip_limit = (
-        st.sidebar.slider("CLAHE Clip Limit", 1.0, 5.0, 2.0, 0.5, help="Higher = more contrast amplification.")
-        if enhance_clahe else 2.0
+    clahe_clip_limit = st.sidebar.slider(
+        "CLAHE Clip Limit",
+        1.0,
+        5.0,
+        2.0,
+        0.5,
+        help="Controls the contrast limit for adaptive histogram equalization.",
     )
     boundary_extraction = st.sidebar.checkbox(
         "Refine object boundaries (GrabCut)",
@@ -267,7 +266,6 @@ def main():
                     ransac_threshold=ransac_threshold,
                     ela_quality=ela_quality,
                     max_edge=max_edge,
-                    enhance_clahe=enhance_clahe,
                     clahe_clip_limit=clahe_clip_limit,
                     boundary_extraction=boundary_extraction,
                 )
@@ -363,8 +361,10 @@ def main():
                             st.info("Gaussian smoothing disabled in current run.")
                     with d1_col3:
                         st.image(
-                            report.preprocess.gray_image,
-                            caption="1.3 Grayscale Luminance (1-Channel uint8)",
+                            report.preprocess.base_gray_image
+                            if report.preprocess.base_gray_image is not None
+                            else report.preprocess.gray_image,
+                            caption="1.3 Grayscale Luminance (Before CLAHE)",
                             use_container_width=True
                         )
                     with d1_col4:
@@ -379,7 +379,7 @@ def main():
 
                     # Grayscale Histogram
                     hist, _ = np.histogram(report.preprocess.gray_image, bins=32, range=(0, 256))
-                    st.caption("Grayscale Intensity Distribution Histogram (32 bins):")
+                    st.caption("Detection Grayscale Histogram after CLAHE (32 bins):")
                     st.bar_chart(hist)
 
                 # --- DIP STAGE 2: Feature Extraction ---

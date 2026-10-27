@@ -19,6 +19,7 @@ class PreprocessResult:
     original_height: int
     denoised_image: Optional[np.ndarray] = None  # Gaussian smoothed image (DIP Stage 1)
     clahe_image: Optional[np.ndarray] = None     # CLAHE contrast enhanced image (DIP Stage 1)
+    base_gray_image: Optional[np.ndarray] = None # Grayscale before CLAHE (DIP Stage 1)
 
 
 @dataclass

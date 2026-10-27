@@ -93,5 +93,6 @@ def preprocess_image(
         original_width=int(original_width),
         original_height=int(original_height),
         denoised_image=denoised_image,
-        clahe_image=clahe_image
+        clahe_image=clahe_image,
+        base_gray_image=base_gray,
     )
