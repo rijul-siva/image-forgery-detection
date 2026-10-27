@@ -27,6 +27,18 @@ def fit_dip_preview(image: np.ndarray, max_width: int = 900, max_height: int = 5
     )
 
 
+def dip_comparison_canvas(image: np.ndarray) -> np.ndarray:
+    """Place a full comparison image on a shared portrait canvas for alignment."""
+    canvas_width, canvas_height = 400, 600
+    fitted = fit_dip_preview(image, max_width=canvas_width, max_height=canvas_height)
+    height, width = fitted.shape[:2]
+    canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
+    x_offset = (canvas_width - width) // 2
+    y_offset = (canvas_height - height) // 2
+    canvas[y_offset:y_offset + height, x_offset:x_offset + width] = fitted
+    return canvas
+
+
 def safe_upload_suffix(filename: str) -> str:
     """Return a decoder-safe temporary-file suffix for an uploaded file.
 
@@ -513,22 +525,25 @@ def main():
                 st.info("💡 **Tip for Review / Viva:** You can also run `python scripts/export_dip_stages.py` in your terminal to save all 14 individual DIP stage images to the `outputs/dip_stages/` folder.")
                 st.subheader("Copy-Move Forgery Analysis & Quantitative Parameters")
                 
-                # Visualizations Side-by-Side
-                v1, v2 = st.columns(2)
-                with v1:
-                    if cm.match_visualization is not None:
-                        st.image(
-                            cv2.cvtColor(cm.match_visualization, cv2.COLOR_BGR2RGB),
-                            caption="Keypoint Feature Matches (Green = Inliers, Red = Outliers)",
-                            use_container_width=True
-                        )
-                with v2:
-                    if cm.region_visualization is not None:
-                        st.image(
-                            cv2.cvtColor(cm.region_visualization, cv2.COLOR_BGR2RGB),
-                            caption="Localized Suspicious Regions & Direction Vector",
-                            use_container_width=True
-                        )
+                # Keep the comparison pair grouped and centered instead of
+                # leaving a wide empty span between fixed-width previews.
+                _, comparison, _ = st.columns([1, 2, 1])
+                with comparison:
+                    v1, v2 = st.columns(2)
+                    with v1:
+                        if cm.match_visualization is not None:
+                            st.image(
+                                dip_comparison_canvas(cv2.cvtColor(cm.match_visualization, cv2.COLOR_BGR2RGB)),
+                                caption="Keypoint Feature Matches (Green = Inliers, Red = Outliers)",
+                                width=400
+                            )
+                    with v2:
+                        if cm.region_visualization is not None:
+                            st.image(
+                                dip_comparison_canvas(cv2.cvtColor(cm.region_visualization, cv2.COLOR_BGR2RGB)),
+                                caption="Localized Suspicious Regions & Direction Vector",
+                                width=400
+                            )
                         
                 st.divider()
                 
