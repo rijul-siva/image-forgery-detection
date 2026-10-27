@@ -212,7 +212,12 @@ def main():
     
     # Sidebar Configuration
     st.sidebar.header("⚙️ Pipeline Configuration")
-    detector = st.sidebar.selectbox("Feature Detector", ["orb", "sift"], index=0, help="ORB is fast; SIFT is scale & rotation invariant.")
+    detector = st.sidebar.selectbox(
+        "Feature Detector",
+        ["orb", "sift"],
+        index=1,
+        help="SIFT handles scale changes more reliably; ORB is faster.",
+    )
     ratio = st.sidebar.slider("Lowe's Ratio Threshold", 0.50, 0.90, 0.75, 0.05, help="Lower ratio = stricter matching.")
     ransac_threshold = st.sidebar.slider("RANSAC Inlier Threshold (px)", 1.0, 10.0, 3.0, 0.5, help="Maximum reprojection error for inlier matches.")
     ela_quality = st.sidebar.slider("ELA JPEG Quality Level", 80, 100, 95, 1, help="Quality level for JPEG re-compression.")

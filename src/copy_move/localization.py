@@ -7,9 +7,10 @@ locations (k >= 2), rather than assuming exactly one source and one copy.
 Each cluster is turned into a mask:
 
   - Draw each cluster into its own binary mask.
+  - Fill the convex hull of its matched keypoints to retain the full spatial footprint.
   - Run morphological closing + dilation to fill gaps between sparse
     keypoints.
-  - Take the largest connected component in each mask as the region.
+  - Keep the largest connected component as the localized match area.
   - Compute bounding box, area (px and % of image), and centroid, in both
     the resized analysis canvas and the original native resolution.
 
@@ -127,6 +128,20 @@ def _points_to_mask(
     radius = max(4, int(0.0035 * (w + h) * 0.5))
     for x, y in points:
         cv2.circle(mask, (int(round(x)), int(round(y))), radius, 255, thickness=-1)
+    return mask
+
+
+def _points_to_region_mask(
+    points: PointArray,
+    image_shape: Tuple[int, int],
+) -> np.ndarray:
+    """Fill the keypoint hull so sparse matches represent their full extent."""
+    mask = _points_to_mask(points, image_shape)
+    if len(points) < 3:
+        return mask
+
+    hull = cv2.convexHull(np.asarray(points, dtype=np.float32).reshape(-1, 1, 2))
+    cv2.fillConvexPoly(mask, np.rint(hull).astype(np.int32), 255)
     return mask
 
 
@@ -272,7 +287,8 @@ def localize_forgery(
     ) -> None:
         nonlocal combined_mask, combined_raw_mask, combined_closed_mask, combined_dilated_mask
         raw_mask = _points_to_mask(points, image_shape)
-        closed_m, dilated_m, refined = _refine_mask_stages(raw_mask)
+        region_support = _points_to_region_mask(points, image_shape)
+        closed_m, dilated_m, refined = _refine_mask_stages(region_support)
         info = _compute_region_info(refined, image_shape, scale_factor)
         if info is None:
             return
