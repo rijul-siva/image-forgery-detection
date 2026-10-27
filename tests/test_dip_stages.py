@@ -40,8 +40,8 @@ def synthetic_forged_image():
 
 
 def test_dip_stage_1_preprocessing(synthetic_forged_image):
-    """Test DIP Stage 1: Grayscale conversion, spatial decimation, and Gaussian smoothing."""
-    prep = preprocess_image(synthetic_forged_image, max_edge=1600, denoise=False)
+    """Test DIP Stage 1: grayscale conversion, sampling, and spatial filtering."""
+    prep = preprocess_image(synthetic_forged_image, max_edge=1600, apply_filter=False)
     
     # Check Grayscale conversion
     assert prep.gray_image is not None
@@ -49,10 +49,10 @@ def test_dip_stage_1_preprocessing(synthetic_forged_image):
     assert prep.gray_image.shape == (600, 800)
     assert prep.gray_image.dtype == np.uint8
 
-    # Check Gaussian smoothed representation
-    assert prep.denoised_image is not None
-    assert prep.denoised_image.shape == (600, 800, 3)
-    assert prep.denoised_image.dtype == np.uint8
+    # Check the selected spatial-filter representation
+    assert prep.filtered_image is not None
+    assert prep.filtered_image.shape == (600, 800, 3)
+    assert prep.filtered_image.dtype == np.uint8
 
 
 def test_dip_stage_2_feature_extraction(synthetic_forged_image):

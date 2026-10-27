@@ -47,15 +47,15 @@ def export_dip_stages(
     # STAGE 1: Preprocessing & Spatial Filtering
     # -------------------------------------------------------------
     print(">> [DIP Stage 1] Preprocessing & Spatial Filtering...")
-    prep = preprocess_image(image_path, max_edge=1600, denoise=True)
+    prep = preprocess_image(image_path, max_edge=1600, apply_filter=True)
     
     cv2.imwrite(str(out_path / "01_resized_color.png"), prep.color_image)
-    if prep.denoised_image is not None:
-        cv2.imwrite(str(out_path / "02_non_local_means_denoised.png"), prep.denoised_image)
+    if prep.filtered_image is not None:
+        cv2.imwrite(str(out_path / "02_gaussian_filtered.png"), prep.filtered_image)
     cv2.imwrite(str(out_path / "03_grayscale_luminance.png"), prep.gray_image)
     
     print(f"   - Saved: 01_resized_color.png ({prep.color_image.shape[1]}x{prep.color_image.shape[0]})")
-    print("   - Saved: 02_non_local_means_denoised.png (colored non-local means denoising)")
+    print("   - Saved: 02_gaussian_filtered.png (default 5x5 Gaussian filter)")
     print("   - Saved: 03_grayscale_luminance.png (Formula: Y = 0.299R + 0.587G + 0.114B)")
 
     # -------------------------------------------------------------

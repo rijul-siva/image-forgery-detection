@@ -62,13 +62,13 @@ def test_preprocess_large_image_scaling(sample_image_large):
     assert res.color_image.shape[0] == 900   # height (aspect ratio 4:3 preserved)
 
 
-def test_preprocess_denoising(sample_image_standard):
-    """Verify mild Gaussian smoothing is applied when denoise=True."""
-    res_clean = preprocess_image(sample_image_standard, denoise=False)
-    res_denoised = preprocess_image(sample_image_standard, denoise=True)
-    assert res_denoised.color_image is not None
-    assert res_denoised.gray_image is not None
-    assert res_denoised.color_image.shape == res_clean.color_image.shape
+def test_preprocess_filtering(sample_image_standard):
+    """Verify the selected spatial filter can feed downstream grayscale analysis."""
+    res_unfiltered = preprocess_image(sample_image_standard, apply_filter=False)
+    res_filtered = preprocess_image(sample_image_standard, apply_filter=True)
+    assert res_filtered.filtered_image is not None
+    assert res_filtered.gray_image is not None
+    assert res_filtered.color_image.shape == res_unfiltered.color_image.shape
 
 
 def test_preprocess_invalid_path():

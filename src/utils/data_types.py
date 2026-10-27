@@ -17,7 +17,7 @@ class PreprocessResult:
     scale_factor: float              # How much the image was resized
     original_width: int
     original_height: int
-    denoised_image: Optional[np.ndarray] = None  # Non-local means output (DIP Stage 1)
+    filtered_image: Optional[np.ndarray] = None   # Selected spatial filter output (DIP Stage 1)
     clahe_image: Optional[np.ndarray] = None     # CLAHE contrast enhanced image (DIP Stage 1)
     base_gray_image: Optional[np.ndarray] = None # Grayscale before CLAHE (DIP Stage 1)
 

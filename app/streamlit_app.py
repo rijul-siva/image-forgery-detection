@@ -5,7 +5,7 @@ import json
 import numpy as np
 import cv2
 
-from src.preprocessing import preprocess_image
+from src.preprocessing import SPATIAL_FILTERS, preprocess_image
 from src.copy_move.pipeline import run_copy_move_analysis
 from src.forensics.ela import run_ela_analysis
 from src.forensics.metadata import run_metadata_analysis
@@ -57,8 +57,9 @@ def run_full_pipeline(
     ransac_threshold: float = 3.0,
     ela_quality: int = 95,
     max_edge: int = 1600,
-    denoise: bool = True,
-    denoise_strength: int = 12,
+    apply_filter: bool = True,
+    filter_method: str = "gaussian",
+    filter_kernel_size: int = 5,
     enhance_clahe: bool = True,
     clahe_clip_limit: float = 2.0,
     boundary_extraction: bool = False,
@@ -69,8 +70,9 @@ def run_full_pipeline(
     preprocess = preprocess_image(
         image_path, 
         max_edge=max_edge, 
-        denoise=denoise,
-        denoise_strength=denoise_strength,
+        apply_filter=apply_filter,
+        filter_method=filter_method,
+        filter_kernel_size=filter_kernel_size,
         enhance_clahe=enhance_clahe, 
         clahe_clip_limit=clahe_clip_limit
     )
@@ -235,13 +237,18 @@ def main():
     ransac_threshold = st.sidebar.slider("RANSAC Inlier Threshold (px)", 1.0, 10.0, 3.0, 0.5, help="Maximum reprojection error for inlier matches.")
     ela_quality = st.sidebar.slider("ELA JPEG Quality Level", 80, 100, 95, 1, help="Quality level for JPEG re-compression.")
     max_edge = st.sidebar.select_slider("Max Image Edge (Resolution Cap)", options=[800, 1200, 1600, 2000], value=1600)
-    denoise_strength = st.sidebar.slider(
-        "Denoising Strength",
-        0,
-        20,
-        12,
-        1,
-        help="Non-local means strength. Higher values reduce more noise but may soften fine detail; 0 disables denoising.",
+    filter_method = st.sidebar.selectbox(
+        "Spatial Filter",
+        options=list(SPATIAL_FILTERS),
+        format_func=lambda method: SPATIAL_FILTERS[method],
+        help="Choose a filter covered in DIP. Mean is the arithmetic-mean (box) filter; min and max take neighborhood extrema.",
+    )
+    filter_kernel_size = st.sidebar.select_slider(
+        "Filter Neighborhood",
+        options=[3, 5, 7, 9, 11, 13, 15],
+        value=5,
+        format_func=lambda size: f"{size} × {size}",
+        help="Larger neighborhoods produce a stronger effect and can remove more detail.",
     )
     
     st.sidebar.subheader("🔬 DIP Enhancements")
@@ -279,7 +286,8 @@ def main():
                     ransac_threshold=ransac_threshold,
                     ela_quality=ela_quality,
                     max_edge=max_edge,
-                    denoise_strength=denoise_strength,
+                    filter_method=filter_method,
+                    filter_kernel_size=filter_kernel_size,
                     clahe_clip_limit=clahe_clip_limit,
                     boundary_extraction=boundary_extraction,
                 )
@@ -355,11 +363,11 @@ def main():
                 )
                 
                 # --- DIP STAGE 1: Preprocessing & Spatial Filtering ---
-                with st.expander("📍 DIP Stage 1: Spatial Sampling, Grayscale Conversion & Denoising", expanded=True):
+                with st.expander("📍 DIP Stage 1: Spatial Sampling, Filtering & Grayscale Conversion", expanded=True):
                     st.markdown("""
                     **DIP Concepts:** Color-to-grayscale intensity conversion via luminance weighting 
                     $Y = 0.299R + 0.587G + 0.114B$, decimation via area interpolation (`cv2.INTER_AREA`), 
-                    colored non-local means denoising, and
+                    spatial filtering with a selected Gaussian, arithmetic-mean, minimum, or maximum neighborhood operator, and
                     **local adaptive contrast enhancement via CLAHE** (Contrast Limited Adaptive Histogram Equalization).
                     """)
                     d1_col1, d1_col2, d1_col3, d1_col4 = st.columns(4)
@@ -370,10 +378,10 @@ def main():
                             use_container_width=True
                         )
                     with d1_col2:
-                        if report.preprocess.denoised_image is not None:
+                        if report.preprocess.filtered_image is not None:
                             st.image(
-                                cv2.cvtColor(report.preprocess.denoised_image, cv2.COLOR_BGR2RGB),
-                                caption=f"1.2 Denoised (Non-local Means, h={denoise_strength}; used for detection)",
+                                cv2.cvtColor(report.preprocess.filtered_image, cv2.COLOR_BGR2RGB),
+                                caption=f"1.2 {SPATIAL_FILTERS[filter_method]} Filtered ({filter_kernel_size}×{filter_kernel_size}; used for detection)",
                                 use_container_width=True
                             )
                         else:
@@ -397,13 +405,17 @@ def main():
                             st.info("CLAHE enhancement disabled.")
 
                     # Grayscale Histogram
-                    st.markdown("#### Noise Reduction Comparison")
+                    st.markdown("#### Original vs. Filtered")
                     st.caption(
-                        "Non-local means averages similar image patches to reduce noise. "
-                        "It cannot recover detail that was not captured, and stronger settings may soften texture."
+                        {
+                            "gaussian": "Gaussian filtering uses weighted neighborhood averaging for smooth noise reduction.",
+                            "mean": "The arithmetic mean filter replaces each pixel with the neighborhood average; it can soften edges.",
+                            "min": "The min filter replaces each channel value with the darkest value in its neighborhood, which can expand dark areas.",
+                            "max": "The max filter replaces each channel value with the brightest value in its neighborhood, which can expand bright areas.",
+                        }[filter_method]
                     )
                     original_rgb = cv2.cvtColor(report.preprocess.color_image, cv2.COLOR_BGR2RGB)
-                    denoised_rgb = cv2.cvtColor(report.preprocess.denoised_image, cv2.COLOR_BGR2RGB)
+                    filtered_rgb = cv2.cvtColor(report.preprocess.filtered_image, cv2.COLOR_BGR2RGB)
                     preview_height = 680
                     comparison_col1, comparison_col2 = st.columns(2, gap="medium")
                     with comparison_col1:
@@ -414,8 +426,8 @@ def main():
                         )
                     with comparison_col2:
                         st.image(
-                            fit_dip_preview(denoised_rgb, max_width=700, max_height=preview_height),
-                            caption=f"Restored — denoising strength {denoise_strength}",
+                            fit_dip_preview(filtered_rgb, max_width=700, max_height=preview_height),
+                            caption=f"{SPATIAL_FILTERS[filter_method]} filtered — {filter_kernel_size}×{filter_kernel_size}",
                             width="content",
                         )
 
